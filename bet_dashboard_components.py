@@ -759,8 +759,10 @@ def render_grouped_table(df: pd.DataFrame, unit_mode: bool = False) -> None:
             "ROI attendu %",
             "Gains net",
         ]
-        display_match = df[match_columns].copy().rename(
-            columns={"MatchId": "ID AsianOdds", "ID_MARKET": "ID Market"}
+        display_match = (
+            df[match_columns]
+            .copy()
+            .rename(columns={"MatchId": "ID AsianOdds", "ID_MARKET": "ID Market"})
         )
         if "Date match" in df.columns:
             display_match["Date"] = df["Date match"]

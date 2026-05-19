@@ -749,9 +749,7 @@ def _has_match_separator(value: Any) -> bool:
     text = _clean_match_side(value)
     if not text:
         return False
-    return bool(
-        re.search(r"\s+(?:v(?:s)?\.?|[-–—])\s+", text, flags=re.IGNORECASE)
-    )
+    return bool(re.search(r"\s+(?:v(?:s)?\.?|[-–—])\s+", text, flags=re.IGNORECASE))
 
 
 def _build_match_label(
@@ -768,8 +766,8 @@ def _build_match_label(
             return normalized
 
     for home_side, away_side in (
-        (home_team_clean, away_team_clean),
         (home_team, away_team),
+        (home_team_clean, away_team_clean),
     ):
         home = _clean_match_side(home_side)
         away = _clean_match_side(away_side)
@@ -810,9 +808,17 @@ def _derive_match_odds_modality(
     if len(parts) == 2:
         home_token = _normalize_bet_token(parts[0])
         away_token = _normalize_bet_token(parts[1])
-        if selection_token and selection_token == home_token:
+        if selection_token and (
+            selection_token == home_token
+            or selection_token in home_token
+            or home_token in selection_token
+        ):
             return "Home"
-        if selection_token and selection_token == away_token:
+        if selection_token and (
+            selection_token == away_token
+            or selection_token in away_token
+            or away_token in selection_token
+        ):
             return "Away"
 
     if selection_token in {"1", "h", "home"}:

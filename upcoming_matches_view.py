@@ -330,12 +330,10 @@ def _outcome_row(row: pd.Series, outcome: dict[str, str | None], min_ev: float) 
     return f"""
         <div class='ws-grid-row'>
             <span class='p-col'>{escape(_outcome_name(row, outcome))}</span>
-            {_price_cell(row, key, "back_2", "back", best_back)}
             {_price_cell(row, key, "back_1", "back", best_back)}
             {_price_cell(row, key, "back", "back", best_back)}
             {_price_cell(row, key, "lay", "lay", best_lay)}
             {_price_cell(row, key, "lay_1", "lay", best_lay)}
-            {_price_cell(row, key, "lay_2", "lay", best_lay)}
             {_fair_cell(fair_odds, asian_max)}
             <span class='ws-ev{_ev_class(ev_back, min_ev)}'>{_fmt_pct(ev_back)}</span>
             <span class='ws-ev{_ev_class(ev_lay, min_ev)}'>{_fmt_pct(ev_lay)}</span>
@@ -394,12 +392,10 @@ def _market_card_html(row: pd.Series, min_ev: float) -> str:
     <div class='ws-book'>
         <div class='ws-grid-head'>
             <span class='p-col'>Issue</span>
-            <span>B2</span>
             <span>B1</span>
             <span>BB</span>
             <span>LB</span>
             <span>L1</span>
-            <span>L2</span>
             <span>Fair</span>
             <span>EV B</span>
             <span>EV L</span>
@@ -416,7 +412,9 @@ _WS_CSS = """
     border: 1px solid rgba(16,35,63,0.10);
     background: rgba(255,255,255,0.92);
     border-radius: 14px;
-    padding: 12px;
+    box-sizing: border-box;
+    width: 100%;
+    padding: clamp(8px, 1vw, 12px);
     margin-bottom: 12px;
     box-shadow: 0 12px 28px rgba(16,35,63,0.06);
 }
@@ -427,6 +425,7 @@ _WS_CSS = """
     align-items: flex-start;
     margin-bottom: 10px;
 }
+.ws-left { min-width: 0; }
 .ws-match { font-weight: 800; color: #10233f; line-height: 1.25; }
 .ws-ids { color: #64748b; font-size: 10px; font-weight: 700; margin-top: 2px; }
 .ws-meta { color: #5e6d82; font-size: 11px; margin-top: 2px; }
@@ -439,13 +438,13 @@ _WS_CSS = """
 .ws-time { color: #5e6d82; font-size: 11px; }
 .ws-link a { color: #0ea5a4; font-size: 11px; text-decoration: none; font-weight: 800; }
 .ws-link a:hover { text-decoration: underline; }
-.ws-book { background: rgba(16,35,63,0.03); border: 1px solid rgba(16,35,63,0.08); border-radius: 10px; padding: 7px; overflow-x: auto; }
-.ws-grid-head, .ws-grid-row { display: grid; grid-template-columns: minmax(110px, 1.5fr) repeat(9, minmax(54px, 1fr)); gap: 2px; align-items: center; margin-bottom: 2px; min-width: 760px; }
+.ws-book { background: rgba(16,35,63,0.03); border: 1px solid rgba(16,35,63,0.08); border-radius: 10px; padding: clamp(4px, 0.7vw, 7px); overflow-x: hidden; }
+.ws-grid-head, .ws-grid-row { display: grid; grid-template-columns: minmax(76px, 1.35fr) repeat(7, minmax(0, 1fr)); gap: 2px; align-items: center; margin-bottom: 2px; width: 100%; min-width: 0; }
 .ws-grid-head span { font-size: 10px; color: #5e6d82; font-weight: 800; text-align: center; }
-.ws-grid-row .p-col { font-size: 12px; color: #10233f; text-align: left; font-weight: 800; padding-left: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ws-grid-row strong, .ws-chip, .ws-ev { text-align: center; font-size: 13px; border-radius: 6px; padding: 5px 4px; min-height: 34px; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.05; box-sizing: border-box; }
-.ws-size { font-size: 10px; font-weight: 500; opacity: 0.72; margin-top: 1px; }
-.ws-max-odd { font-size: 9px; font-weight: 700; color: #64748b; margin-top: 1px; }
+.ws-grid-row .p-col { font-size: clamp(10px, 0.75vw, 12px); color: #10233f; text-align: left; font-weight: 800; padding-left: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ws-grid-row strong, .ws-chip, .ws-ev { text-align: center; font-size: clamp(10px, 0.78vw, 13px); border-radius: 6px; padding: clamp(3px, 0.45vw, 5px) 3px; min-height: 32px; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.05; box-sizing: border-box; min-width: 0; overflow: hidden; }
+.ws-size { font-size: clamp(8px, 0.65vw, 10px); font-weight: 500; opacity: 0.72; margin-top: 1px; }
+.ws-max-odd { font-size: clamp(7px, 0.58vw, 9px); font-weight: 700; color: #64748b; margin-top: 1px; }
 .ws-back { color: #10233f; border: 1px solid rgba(59,130,246,0.22); background: rgba(59,130,246,0.04); }
 .ws-lay { color: #10233f; border: 1px solid rgba(244,114,182,0.24); background: rgba(244,114,182,0.04); }
 .ws-best-back { background: #9bd3ff; border-color: rgba(37,99,235,0.36); font-weight: 800; }
@@ -469,6 +468,22 @@ _WS_CSS = """
 @media (max-width: 900px) {
     .ws-head { flex-direction: column; }
     .ws-right { justify-content: flex-start; }
+    .ws-grid-head, .ws-grid-row { grid-template-columns: minmax(82px, 1.45fr) repeat(7, minmax(34px, 1fr)); gap: 1px; }
+}
+@media (max-width: 560px) {
+    .ws-card { padding: 8px; }
+    .ws-grid-head, .ws-grid-row { grid-template-columns: minmax(76px, 1.35fr) repeat(5, minmax(38px, 1fr)); }
+    .ws-grid-head span:nth-child(2),
+    .ws-grid-row > *:nth-child(2),
+    .ws-grid-head span:nth-child(5),
+    .ws-grid-row > *:nth-child(5) { display: none; }
+    .ws-grid-row strong, .ws-chip, .ws-ev { min-height: 30px; }
+    .ws-ids { font-size: 9px; }
+}
+@media (max-width: 420px) {
+    .ws-grid-head, .ws-grid-row { grid-template-columns: minmax(68px, 1.25fr) repeat(5, minmax(32px, 1fr)); }
+    .ws-grid-head span { font-size: 8px; }
+    .ws-grid-row .p-col { font-size: 9px; }
 }
 </style>
 """

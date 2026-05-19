@@ -24,6 +24,7 @@ OUTCOMES = (
         "fallback_team_col": "HomeTeam",
         "prob_col": "p_calib_home",
         "pred_col": "home_pred",
+        "max_col": "home_max",
     },
     {
         "key": "draw",
@@ -33,6 +34,7 @@ OUTCOMES = (
         "fallback_team_col": None,
         "prob_col": "p_calib_draw",
         "pred_col": "draw_pred",
+        "max_col": "draw_max",
     },
     {
         "key": "away",
@@ -42,6 +44,7 @@ OUTCOMES = (
         "fallback_team_col": "AwayTeam",
         "prob_col": "p_calib_away",
         "pred_col": "away_pred",
+        "max_col": "away_max",
     },
 )
 
@@ -84,6 +87,18 @@ def _fmt_pct(value: object) -> str:
 def _safe_int(value: object) -> int:
     numeric = pd.to_numeric(value, errors="coerce")
     return int(float(numeric)) if pd.notna(numeric) else 0
+
+
+def _fmt_identifier(value: object) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    try:
+        numeric = float(value)
+    except Exception:
+        return str(value).strip()
+    if numeric.is_integer():
+        return str(int(numeric))
+    return f"{numeric:.9f}".rstrip("0").rstrip(".")
 
 
 def _fmt_ts(value: object, seconds: bool = False) -> str:
@@ -261,6 +276,36 @@ def _price_cell(
     )
 
 
+def _fair_cell(fair_odds: object, asian_max: object) -> str:
+    max_label = _fmt_odd(asian_max)
+    max_html = (
+        f"<span class='ws-max-odd'>(AO max {max_label})</span>"
+        if max_label != "-"
+        else ""
+    )
+    return (
+        "<span class='ws-chip'>"
+        f"<span class='ws-odd'>{_fmt_odd(fair_odds)}</span>"
+        f"{max_html}"
+        "</span>"
+    )
+
+
+def _ids_line(row: pd.Series) -> str:
+    id_parts = []
+    for label, column in (
+        ("Match", "feed_match_id"),
+        ("Game", "GameId"),
+        ("Market", "ID_MARKET"),
+    ):
+        value = _fmt_identifier(row.get(column))
+        if value:
+            id_parts.append(f"{label} {escape(value)}")
+    if not id_parts:
+        return ""
+    return f"<div class='ws-ids'>{' | '.join(id_parts)}</div>"
+
+
 def _outcome_name(row: pd.Series, outcome: dict[str, str | None]) -> str:
     if outcome["key"] == "draw":
         return _first_text(row, outcome["name_col"], fallback="Draw")
@@ -281,6 +326,7 @@ def _outcome_row(row: pd.Series, outcome: dict[str, str | None], min_ev: float) 
     ev_back = row.get(f"ev_{key}_back")
     ev_lay = row.get(f"ev_{key}_lay")
     fair_odds = row.get(f"fair_{key}")
+    asian_max = row.get(str(outcome.get("max_col") or f"{key}_max"))
     return f"""
         <div class='ws-grid-row'>
             <span class='p-col'>{escape(_outcome_name(row, outcome))}</span>
@@ -290,7 +336,7 @@ def _outcome_row(row: pd.Series, outcome: dict[str, str | None], min_ev: float) 
             {_price_cell(row, key, "lay", "lay", best_lay)}
             {_price_cell(row, key, "lay_1", "lay", best_lay)}
             {_price_cell(row, key, "lay_2", "lay", best_lay)}
-            <span class='ws-chip'>{_fmt_odd(fair_odds)}</span>
+            {_fair_cell(fair_odds, asian_max)}
             <span class='ws-ev{_ev_class(ev_back, min_ev)}'>{_fmt_pct(ev_back)}</span>
             <span class='ws-ev{_ev_class(ev_lay, min_ev)}'>{_fmt_pct(ev_lay)}</span>
         </div>
@@ -327,11 +373,13 @@ def _market_card_html(row: pd.Series, min_ev: float) -> str:
         )
 
     rows = "".join(_outcome_row(row, outcome, min_ev) for outcome in OUTCOMES)
+    ids_line = _ids_line(row)
     return f"""
 <div class='ws-card'>
     <div class='ws-head'>
         <div class='ws-left'>
             <div class='ws-match'>{match_label}</div>
+            {ids_line}
             <div class='ws-meta'>{league} | {status} | Debut {kickoff}</div>
             <div class='ws-meta'>{"Meilleure EV " + _fmt_pct(best_ev) + " | Updates " + str(_safe_int(row.get("n_updates"))) if has_ws_odds else "Predictions seules | Fair odds 1X2"}</div>
             {analytics}
@@ -380,6 +428,7 @@ _WS_CSS = """
     margin-bottom: 10px;
 }
 .ws-match { font-weight: 800; color: #10233f; line-height: 1.25; }
+.ws-ids { color: #64748b; font-size: 10px; font-weight: 700; margin-top: 2px; }
 .ws-meta { color: #5e6d82; font-size: 11px; margin-top: 2px; }
 .ws-right { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .ws-pill { border-radius: 999px; font-size: 10px; padding: 2px 8px; background: rgba(16,35,63,0.08); color: #10233f; font-weight: 700; }
@@ -396,6 +445,7 @@ _WS_CSS = """
 .ws-grid-row .p-col { font-size: 12px; color: #10233f; text-align: left; font-weight: 800; padding-left: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-grid-row strong, .ws-chip, .ws-ev { text-align: center; font-size: 13px; border-radius: 6px; padding: 5px 4px; min-height: 34px; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.05; box-sizing: border-box; }
 .ws-size { font-size: 10px; font-weight: 500; opacity: 0.72; margin-top: 1px; }
+.ws-max-odd { font-size: 9px; font-weight: 700; color: #64748b; margin-top: 1px; }
 .ws-back { color: #10233f; border: 1px solid rgba(59,130,246,0.22); background: rgba(59,130,246,0.04); }
 .ws-lay { color: #10233f; border: 1px solid rgba(244,114,182,0.24); background: rgba(244,114,182,0.04); }
 .ws-best-back { background: #9bd3ff; border-color: rgba(37,99,235,0.36); font-weight: 800; }

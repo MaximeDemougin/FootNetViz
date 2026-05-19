@@ -929,3 +929,257 @@ def prepare_dashboard_bets(bets: pd.DataFrame) -> pd.DataFrame:
 
 def get_last_refresh_label() -> str:
     return datetime.now().strftime("%H:%M:%S")
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def load_upcoming_ws_odds(user_id: int | None = None) -> pd.DataFrame:
+    query = """
+        WITH aof_ranked AS (
+            SELECT
+                CAST(MatchId AS CHAR) AS match_key,
+                MatchId,
+                LeagueId,
+                LeagueName,
+                GameId,
+                HomeTeam,
+                HomeTeam_clean,
+                AwayTeam,
+                AwayTeam_clean,
+                `date` AS feed_match_date,
+                home_max,
+                draw_max,
+                away_max,
+                home_pred,
+                draw_pred,
+                away_pred,
+                p_calib_home,
+                p_calib_draw,
+                p_calib_away,
+                maj AS feed_maj,
+                ROW_NUMBER() OVER (
+                    PARTITION BY CAST(MatchId AS CHAR)
+                    ORDER BY COALESCE(maj, `date`) DESC, `date` DESC
+                ) AS row_rank
+            FROM AsianOdds_feeds
+            WHERE `date` >= NOW()
+        ),
+        bfl_ranked AS (
+            SELECT
+                ID_MARKET,
+                ID_EVENT,
+                MatchId AS link_match_id,
+                match_title_flash,
+                match_title,
+                home_name AS link_home_name,
+                away_name AS link_away_name,
+                ROW_NUMBER() OVER (
+                    PARTITION BY CAST(MatchId AS CHAR)
+                    ORDER BY ID_BETFAIR DESC
+                ) AS row_rank
+            FROM Betfair_links_p
+        ),
+        ws_ranked AS (
+            SELECT
+                ws.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY ws.ID_MARKET
+                    ORDER BY ws.updated_at DESC, ws.id DESC
+                ) AS row_rank
+            FROM WS_odds ws
+        ),
+        ba_market AS (
+            SELECT
+                ID_MARKET,
+                MAX(created_at) AS analytics_at,
+                AVG(pred_odds) AS analytics_pred_odds,
+                MAX(ev_pct) AS analytics_ev_pct,
+                MAX(strategy) AS strategy,
+                MAX(reason) AS reason,
+                SUM(COALESCE(matched_stake, 0)) AS analytics_matched_stake
+            FROM Bet_analytics
+            WHERE (:user_id IS NULL OR ID_USER = :user_id)
+            GROUP BY ID_MARKET
+        ),
+        bp_market AS (
+            SELECT
+                ID_MARKET,
+                COUNT(*) AS user_bets_count,
+                SUM(COALESCE(stake, 0)) AS user_bets_stake,
+                MAX(created_at) AS last_bet_at
+            FROM Bet_p
+            WHERE (:user_id IS NULL OR ID_USER = :user_id)
+            GROUP BY ID_MARKET
+        )
+        SELECT
+            ws.id,
+            ws.created_at,
+            ws.updated_at,
+            COALESCE(ws.ID_MATCH, aof.MatchId) AS ID_MATCH,
+            COALESCE(ws.ID_MARKET, bfl.ID_MARKET) AS ID_MARKET,
+            bfl.ID_EVENT,
+            bfl.link_match_id,
+            bfl.match_title_flash,
+            bfl.match_title,
+            bfl.link_home_name,
+            bfl.link_away_name,
+            ws.home_name,
+            ws.draw_name,
+            ws.away_name,
+            COALESCE(ws.inplay, 0) AS inplay,
+            COALESCE(ws.status, 'PRED') AS status,
+            CASE WHEN ws.ID_MARKET IS NULL THEN 0 ELSE 1 END AS has_ws_odds,
+            ws.home_back,
+            ws.home_back_1,
+            ws.home_back_2,
+            ws.home_lay,
+            ws.home_lay_1,
+            ws.home_lay_2,
+            ws.draw_back,
+            ws.draw_back_1,
+            ws.draw_back_2,
+            ws.draw_lay,
+            ws.draw_lay_1,
+            ws.draw_lay_2,
+            ws.away_back,
+            ws.away_back_1,
+            ws.away_back_2,
+            ws.away_lay,
+            ws.away_lay_1,
+            ws.away_lay_2,
+            ws.home_back_size,
+            ws.home_back_1_size,
+            ws.home_back_2_size,
+            ws.home_lay_size,
+            ws.home_lay_1_size,
+            ws.home_lay_2_size,
+            ws.draw_back_size,
+            ws.draw_back_1_size,
+            ws.draw_back_2_size,
+            ws.draw_lay_size,
+            ws.draw_lay_1_size,
+            ws.draw_lay_2_size,
+            ws.away_back_size,
+            ws.away_back_1_size,
+            ws.away_back_2_size,
+            ws.away_lay_size,
+            ws.away_lay_1_size,
+            ws.away_lay_2_size,
+            COALESCE(ws.n_updates, 0) AS n_updates,
+            aof.MatchId AS feed_match_id,
+            aof.LeagueId,
+            aof.LeagueName,
+            aof.GameId,
+            aof.HomeTeam,
+            aof.HomeTeam_clean,
+            aof.AwayTeam,
+            aof.AwayTeam_clean,
+            aof.feed_match_date,
+            aof.home_max,
+            aof.draw_max,
+            aof.away_max,
+            aof.home_pred,
+            aof.draw_pred,
+            aof.away_pred,
+            aof.p_calib_home,
+            aof.p_calib_draw,
+            aof.p_calib_away,
+            aof.feed_maj,
+            ba.analytics_at,
+            ba.analytics_pred_odds,
+            ba.analytics_ev_pct,
+            ba.strategy,
+            ba.reason,
+            ba.analytics_matched_stake,
+            bp.user_bets_count,
+            bp.user_bets_stake,
+            bp.last_bet_at
+        FROM aof_ranked aof
+        LEFT JOIN bfl_ranked bfl
+            ON CAST(bfl.link_match_id AS CHAR) = aof.match_key
+           AND bfl.row_rank = 1
+        LEFT JOIN ws_ranked ws
+            ON ws.ID_MARKET = bfl.ID_MARKET
+           AND ws.row_rank = 1
+        LEFT JOIN ba_market ba
+            ON ba.ID_MARKET = bfl.ID_MARKET
+        LEFT JOIN bp_market bp
+            ON bp.ID_MARKET = bfl.ID_MARKET
+        WHERE aof.row_rank = 1
+        ORDER BY aof.feed_match_date ASC, ws.updated_at DESC
+    """
+    df = _query_dataframe(query, params={"user_id": user_id})
+    if df.empty:
+        return df
+
+    datetime_columns = [
+        "created_at",
+        "updated_at",
+        "feed_match_date",
+        "feed_maj",
+        "analytics_at",
+        "last_bet_at",
+    ]
+    for column in datetime_columns:
+        if column in df.columns:
+            df[column] = pd.to_datetime(df[column], errors="coerce")
+
+    numeric_columns = [
+        "has_ws_odds",
+        "inplay",
+        "n_updates",
+        "home_back",
+        "home_back_1",
+        "home_back_2",
+        "home_lay",
+        "home_lay_1",
+        "home_lay_2",
+        "draw_back",
+        "draw_back_1",
+        "draw_back_2",
+        "draw_lay",
+        "draw_lay_1",
+        "draw_lay_2",
+        "away_back",
+        "away_back_1",
+        "away_back_2",
+        "away_lay",
+        "away_lay_1",
+        "away_lay_2",
+        "home_back_size",
+        "home_back_1_size",
+        "home_back_2_size",
+        "home_lay_size",
+        "home_lay_1_size",
+        "home_lay_2_size",
+        "draw_back_size",
+        "draw_back_1_size",
+        "draw_back_2_size",
+        "draw_lay_size",
+        "draw_lay_1_size",
+        "draw_lay_2_size",
+        "away_back_size",
+        "away_back_1_size",
+        "away_back_2_size",
+        "away_lay_size",
+        "away_lay_1_size",
+        "away_lay_2_size",
+        "home_max",
+        "draw_max",
+        "away_max",
+        "home_pred",
+        "draw_pred",
+        "away_pred",
+        "p_calib_home",
+        "p_calib_draw",
+        "p_calib_away",
+        "analytics_pred_odds",
+        "analytics_ev_pct",
+        "analytics_matched_stake",
+        "user_bets_count",
+        "user_bets_stake",
+    ]
+    for column in numeric_columns:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    return df.reset_index(drop=True)

@@ -50,16 +50,17 @@ def render_dashboard() -> None:
     st.title("Dashboard paris")
     st.caption(f"Resultats Bet_p - {bets.iloc[0]['username']}")
 
-    header_controls = st.columns((0.18, 0.22, 0.60))
-    unit_mode = header_controls[0].toggle("Unites", value=False)
-    if header_controls[1].button(
-        "Rafraichir", use_container_width=True, key="refresh_dashboard"
-    ):
-        try:
-            st.cache_data.clear()
-        except Exception:
-            pass
-        st.rerun()
+    with st.sidebar:
+        st.divider()
+        st.markdown("### Dashboard")
+        unit_mode = st.toggle("Unites", value=False, key="dashboard_unit_mode")
+        st.divider()
+        if st.button("Rafraichir", use_container_width=True, key="refresh_dashboard"):
+            try:
+                st.cache_data.clear()
+            except Exception:
+                pass
+            st.rerun()
 
     lower_bar = st.columns((1.25, 1.0, 1.0))
     date_range = lower_bar[0].date_input(

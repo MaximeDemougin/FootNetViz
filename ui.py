@@ -26,8 +26,44 @@ def apply_theme() -> None:
                 border-right: 1px solid rgba(255, 255, 255, 0.08);
             }
 
-            [data-testid="stSidebar"] * {
+            [data-testid="stSidebar"] h1,
+            [data-testid="stSidebar"] h2,
+            [data-testid="stSidebar"] h3,
+            [data-testid="stSidebar"] label,
+            [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+            [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
+            [data-testid="stSidebar"] [role="radiogroup"] p {
                 color: #f8fafc;
+            }
+
+            [data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
+                color: #b7c2d0;
+            }
+
+            [data-testid="stSidebar"] input,
+            [data-testid="stSidebar"] textarea,
+            [data-testid="stSidebar"] [data-baseweb="input"] input,
+            [data-testid="stSidebar"] [data-baseweb="select"] input,
+            [data-testid="stSidebar"] [data-baseweb="select"] span,
+            [data-testid="stSidebar"] [data-baseweb="select"] > div {
+                color: #10233f !important;
+            }
+
+            [data-testid="stSidebar"] [data-baseweb="select"] > div,
+            [data-testid="stSidebar"] [data-baseweb="input"] > div {
+                background: #ffffff;
+                border-color: rgba(226, 232, 240, 0.95);
+            }
+
+            [data-testid="stSidebar"] [data-baseweb="select"] svg,
+            [data-testid="stSidebar"] [data-baseweb="input"] svg {
+                color: #475569;
+                fill: #475569;
+            }
+
+            [data-testid="stSidebar"] button:not([kind="primary"]) p,
+            [data-testid="stSidebar"] button:not([kind="primary"]) span {
+                color: #10233f;
             }
 
             .footnet-hero {

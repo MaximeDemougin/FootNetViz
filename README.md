@@ -1,13 +1,15 @@
 # FootNetViz
 
-FootNetViz est maintenant un dashboard Streamlit branche en live sur la base FootNet pour suivre les resultats `Bet_p`, dans un esprit proche de TeNNetViz: preparation SQL, enrichissement metier, puis lecture cockpit des performances.
+FootNetViz est maintenant une app Streamlit branchee en live sur la base FootNet pour suivre les resultats `Bet_p` et les matchs a venir issus de `WS_odds`, dans un esprit proche de TeNNetViz: preparation SQL, enrichissement metier, puis lecture cockpit des performances.
 
 ## Ce que contient cette premiere version
 
-- un dashboard unique des paris `Bet_p`
+- une page Dashboard pour les paris `Bet_p`
+- une page Matchs a venir basee sur `WS_odds`, adaptee au foot en 1X2
 - une connexion MySQL via secret Streamlit `db_url`
 - une jointure entre `Bet_p`, `Orbitx_bets`, `Bet_analytics` et `Users`
-- des KPI de PnL, ROI, exposition et win rate
+- une jointure `WS_odds` / `AsianOdds_feeds` pour enrichir les marches a venir
+- des KPI de PnL, ROI, exposition, win rate et opportunites WS
 - des graphes de PnL cumule, PnL par `match_type` et detail des paris
 
 ## Lancer le projet
@@ -45,6 +47,8 @@ La vue actuelle part de:
 - `Bet_p` pour les ordres / stakes / odds / potentiel
 - `Orbitx_bets` pour le profit realise
 - `Bet_analytics` pour `pred_odds`, `ev_pct`, `strategy`, `reason`
+- `WS_odds` pour les carnets back/lay temps reel home/draw/away
+- `AsianOdds_feeds` pour le contexte match, ligue, date et probabilites calibrees
 - `Users` pour l'identite utilisateur
 
 Jointure principale retenue:

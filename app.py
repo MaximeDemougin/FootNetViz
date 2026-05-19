@@ -3,6 +3,7 @@ import streamlit as st
 
 from betting_data import get_db_status, get_user_catalog
 from dashboard_view import render_dashboard
+from upcoming_matches_view import render_upcoming_matches
 from ui import apply_theme
 
 st.set_page_config(page_title="FootNetViz", page_icon="⚽", layout="wide")
@@ -20,10 +21,14 @@ else:
 
 with st.sidebar:
     st.markdown("## FootNet")
-    st.caption("Dashboard live des resultats `Bet_p`, branche sur FootNet comme TeNNetViz branche ses vues de paris.")
+
+    selected_page = st.radio(
+        "Page",
+        ["Dashboard", "Matchs a venir"],
+        key="selected_page",
+    )
 
     if db_status["connected"] == "true":
-        st.success(f"BDD connectee: {db_status['db_name']}")
         if users is not None and not users.empty:
             options = users["ID_USER"].astype(int).tolist()
             labels = dict(zip(options, users["label"].tolist(), strict=False))
@@ -33,7 +38,9 @@ with st.sidebar:
                 key="selected_user_id",
                 format_func=lambda user_id: labels.get(user_id, f"User {user_id}"),
             )
-            selected_row = users.loc[users["ID_USER"].astype(int) == int(st.session_state.selected_user_id)].iloc[0]
+            selected_row = users.loc[
+                users["ID_USER"].astype(int) == int(st.session_state.selected_user_id)
+            ].iloc[0]
             st.caption(
                 f"Derniere activite: {selected_row['last_activity']:%Y-%m-%d %H:%M}"
                 if pd.notna(selected_row["last_activity"])
@@ -44,6 +51,11 @@ with st.sidebar:
     else:
         st.error("Connexion BDD indisponible")
         st.caption(db_status["reason"])
-        st.caption("Ajoutez `db_url` dans `.streamlit/secrets.toml` ou exportez `FOOTNET_DB_URL`.")
+        st.caption(
+            "Ajoutez `db_url` dans `.streamlit/secrets.toml` ou exportez `FOOTNET_DB_URL`."
+        )
 
-render_dashboard()
+if st.session_state.get("selected_page") == "Matchs a venir":
+    render_upcoming_matches()
+else:
+    render_dashboard()

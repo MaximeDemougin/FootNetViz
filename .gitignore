@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# FootNet real exports
+data/real/*
+!data/real/
+!data/real/README.md

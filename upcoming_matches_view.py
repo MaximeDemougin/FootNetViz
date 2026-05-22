@@ -1,13 +1,37 @@
 from __future__ import annotations
 
+import json
+import re
 from datetime import timedelta
 from html import escape
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 from betting_data import get_db_status, load_upcoming_ws_odds
+
+
+EXCLUDED_LEAGUES_FILE = Path(__file__).resolve().parent / "data" / "excluded_leagues.json"
+
+
+def _load_excluded_leagues() -> list[str]:
+    try:
+        with EXCLUDED_LEAGUES_FILE.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return sorted({str(item).strip() for item in data if str(item).strip()}, key=str.lower)
+
+
+def _save_excluded_leagues(values: list[str]) -> None:
+    cleaned = sorted({str(item).strip() for item in values if str(item).strip()}, key=str.lower)
+    EXCLUDED_LEAGUES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with EXCLUDED_LEAGUES_FILE.open("w", encoding="utf-8") as handle:
+        json.dump(cleaned, handle, ensure_ascii=False, indent=2)
 
 
 ORBITX_MARKET_URL_TEMPLATE = (
@@ -169,6 +193,170 @@ def _date_group_label(value: object) -> str:
     return timestamp.strftime("%d/%m/%Y %H:%M")
 
 
+def _parse_json_dict(value: object) -> dict:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return {}
+    if isinstance(value, dict):
+        return value
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "null", "none"}:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+_LINE_RE = re.compile(r"^(-?\d+(?:\.\d+)?)(?:-(-?\d+(?:\.\d+)?))?$")
+
+
+def _parse_line(line: str) -> tuple[float | None, float | None, bool]:
+    """Return (low, high, is_negative_split) for an OU/HDP line label.
+
+    Handles formats like "2.5", "-0.5", "1.5-2", "-0-0.5", "-0.5-1".
+    For AsianOdds, "-A-B" means the pair (-A, -B); the second number's sign is implied.
+    """
+    text = str(line).strip()
+    match = _LINE_RE.match(text)
+    if not match:
+        return None, None, False
+    a = float(match.group(1))
+    raw_b = match.group(2)
+    if raw_b is None:
+        return a, a, False
+    b = float(raw_b)
+    # AsianOdds split notation: leading "-" applies to the second value too.
+    if text.startswith("-") and b >= 0:
+        b = -b
+        return min(a, b), max(a, b), True
+    return min(a, b), max(a, b), False
+
+
+def _line_sort_key(line: str) -> tuple[float, float, str]:
+    low, high, _ = _parse_line(line)
+    if low is None or high is None:
+        return float("inf"), float("inf"), str(line)
+    midpoint = (low + high) / 2.0
+    return midpoint, low, str(line)
+
+
+def _fmt_line_label(line: str) -> str:
+    low, high, _ = _parse_line(line)
+    if low is None or high is None:
+        return str(line)
+    midpoint = (low + high) / 2.0
+    return f"{midpoint:g}"
+
+
+def _ou_rows(ou_data: dict, min_ev: float) -> list[dict]:
+    rows = []
+    for line, values in sorted(ou_data.items(), key=lambda kv: _line_sort_key(str(kv[0]))):
+        if not isinstance(values, dict):
+            continue
+        over_max = pd.to_numeric(values.get("over_max"), errors="coerce")
+        over_pred = pd.to_numeric(values.get("over_pred"), errors="coerce")
+        under_max = pd.to_numeric(values.get("under_max"), errors="coerce")
+        under_pred = pd.to_numeric(values.get("under_pred"), errors="coerce")
+        rows.append(
+            {
+                "line": str(line),
+                "over_max": over_max,
+                "over_pred": over_pred,
+                "under_max": under_max,
+                "under_pred": under_pred,
+                "ev_over": _ev_back(over_max, over_pred),
+                "ev_under": _ev_back(under_max, under_pred),
+            }
+        )
+    return rows
+
+
+def _hdp_rows(hdp_data: dict, min_ev: float) -> list[dict]:
+    rows = []
+    for line, values in sorted(hdp_data.items(), key=lambda kv: _line_sort_key(str(kv[0]))):
+        if not isinstance(values, dict):
+            continue
+        home_max = pd.to_numeric(values.get("hdp_home_max"), errors="coerce")
+        home_pred = pd.to_numeric(values.get("hdp_home_pred"), errors="coerce")
+        away_max = pd.to_numeric(values.get("hdp_away_max"), errors="coerce")
+        away_pred = pd.to_numeric(values.get("hdp_away_pred"), errors="coerce")
+        rows.append(
+            {
+                "line": str(line),
+                "home_max": home_max,
+                "home_pred": home_pred,
+                "away_max": away_max,
+                "away_pred": away_pred,
+                "ev_home": _ev_back(home_max, home_pred),
+                "ev_away": _ev_back(away_max, away_pred),
+            }
+        )
+    return rows
+
+
+def _ou_table_html(ou_data: dict, min_ev: float) -> str:
+    rows = _ou_rows(ou_data, min_ev)
+    if not rows:
+        return ""
+    body = "".join(
+        f"""
+        <div class='ws-ouhdp-row'>
+            <span class='ws-ouhdp-line'>{escape(_fmt_line_label(item['line']))}</span>
+            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item['over_max'])}</span></span>
+            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item['over_pred'])}</span></span>
+            <span class='ws-ev{_ev_class(item['ev_over'], min_ev)}'>{_fmt_pct(item['ev_over'])}</span>
+            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item['under_max'])}</span></span>
+            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item['under_pred'])}</span></span>
+            <span class='ws-ev{_ev_class(item['ev_under'], min_ev)}'>{_fmt_pct(item['ev_under'])}</span>
+        </div>
+        """
+        for item in rows
+    )
+    return f"""
+    <div class='ws-ouhdp'>
+        <div class='ws-ouhdp-title'>Over / Under</div>
+        <div class='ws-ouhdp-head'>
+            <span class='ws-ouhdp-line'>Line</span>
+            <span>O max</span><span>O fair</span><span>EV O</span>
+            <span>U max</span><span>U fair</span><span>EV U</span>
+        </div>
+        {body}
+    </div>
+    """
+
+
+def _hdp_table_html(hdp_data: dict, min_ev: float) -> str:
+    rows = _hdp_rows(hdp_data, min_ev)
+    if not rows:
+        return ""
+    body = "".join(
+        f"""
+        <div class='ws-ouhdp-row'>
+            <span class='ws-ouhdp-line'>{escape(_fmt_line_label(item['line']))}</span>
+            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item['home_max'])}</span></span>
+            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item['home_pred'])}</span></span>
+            <span class='ws-ev{_ev_class(item['ev_home'], min_ev)}'>{_fmt_pct(item['ev_home'])}</span>
+            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item['away_max'])}</span></span>
+            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item['away_pred'])}</span></span>
+            <span class='ws-ev{_ev_class(item['ev_away'], min_ev)}'>{_fmt_pct(item['ev_away'])}</span>
+        </div>
+        """
+        for item in rows
+    )
+    return f"""
+    <div class='ws-ouhdp'>
+        <div class='ws-ouhdp-title'>Handicap asiatique</div>
+        <div class='ws-ouhdp-head'>
+            <span class='ws-ouhdp-line'>Line</span>
+            <span>H max</span><span>H fair</span><span>EV H</span>
+            <span>A max</span><span>A fair</span><span>EV A</span>
+        </div>
+        {body}
+    </div>
+    """
+
+
 def _prepare_matches(df: pd.DataFrame) -> pd.DataFrame:
     prepared = df.copy()
     prepared["updated_at"] = pd.to_datetime(prepared.get("updated_at"), errors="coerce")
@@ -245,6 +433,14 @@ def _prepare_matches(df: pd.DataFrame) -> pd.DataFrame:
         axis=1,
     )
     prepared["market_url"] = prepared["ID_MARKET"].apply(_orbitx_url)
+    if "ou_preds" in prepared.columns:
+        prepared["ou_preds_parsed"] = prepared["ou_preds"].apply(_parse_json_dict)
+    else:
+        prepared["ou_preds_parsed"] = [{} for _ in range(len(prepared))]
+    if "hdp_preds" in prepared.columns:
+        prepared["hdp_preds_parsed"] = prepared["hdp_preds"].apply(_parse_json_dict)
+    else:
+        prepared["hdp_preds_parsed"] = [{} for _ in range(len(prepared))]
     return prepared.sort_values(
         ["match_date", "updated_at"], ascending=[True, False], na_position="last"
     )
@@ -341,7 +537,12 @@ def _outcome_row(row: pd.Series, outcome: dict[str, str | None], min_ev: float) 
     """
 
 
-def _market_card_html(row: pd.Series, min_ev: float) -> str:
+def _market_card_html(
+    row: pd.Series,
+    min_ev: float,
+    show_ou: bool = False,
+    show_hdp: bool = False,
+) -> str:
     has_ws_odds = bool(row.get("has_ws_odds", False))
     inplay_badge = "INPLAY" if bool(row.get("is_inplay_effective", False)) else "PRE"
     match_label = escape(str(row.get("match_label") or "-"))
@@ -372,6 +573,11 @@ def _market_card_html(row: pd.Series, min_ev: float) -> str:
 
     rows = "".join(_outcome_row(row, outcome, min_ev) for outcome in OUTCOMES)
     ids_line = _ids_line(row)
+    extras_html = ""
+    if show_ou:
+        extras_html += _ou_table_html(row.get("ou_preds_parsed") or {}, min_ev)
+    if show_hdp:
+        extras_html += _hdp_table_html(row.get("hdp_preds_parsed") or {}, min_ev)
     return f"""
 <div class='ws-card'>
     <div class='ws-head'>
@@ -402,6 +608,7 @@ def _market_card_html(row: pd.Series, min_ev: float) -> str:
         </div>
         {rows}
     </div>
+    {extras_html}
 </div>
 """
 
@@ -465,6 +672,31 @@ _WS_CSS = """
     font-size: 0.86rem;
     border-radius: 6px;
 }
+.ws-ouhdp {
+    margin-top: 8px;
+    background: rgba(16,35,63,0.03);
+    border: 1px solid rgba(16,35,63,0.08);
+    border-radius: 10px;
+    padding: clamp(4px, 0.7vw, 7px);
+}
+.ws-ouhdp-title {
+    font-size: 11px;
+    font-weight: 800;
+    color: #0f766e;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.ws-ouhdp-head, .ws-ouhdp-row {
+    display: grid;
+    grid-template-columns: minmax(54px, 0.9fr) repeat(6, minmax(0, 1fr));
+    gap: 2px;
+    align-items: center;
+    margin-bottom: 2px;
+    width: 100%;
+}
+.ws-ouhdp-head span { font-size: 10px; color: #5e6d82; font-weight: 800; text-align: center; }
+.ws-ouhdp-line { font-size: clamp(10px, 0.75vw, 12px); color: #10233f; text-align: center; font-weight: 800; }
 @media (max-width: 900px) {
     .ws-head { flex-direction: column; }
     .ws-right { justify-content: flex-start; }
@@ -489,20 +721,31 @@ _WS_CSS = """
 """
 
 
-def _render_cards_grid(rows: pd.DataFrame, layout_choice: int, min_ev: float) -> None:
+def _render_cards_grid(
+    rows: pd.DataFrame,
+    layout_choice: int,
+    min_ev: float,
+    show_ou: bool = False,
+    show_hdp: bool = False,
+) -> None:
     columns = st.columns(int(layout_choice))
     for index, (_, row) in enumerate(rows.iterrows()):
         with columns[index % int(layout_choice)]:
-            st.html(_market_card_html(row, min_ev))
+            st.html(_market_card_html(row, min_ev, show_ou=show_ou, show_hdp=show_hdp))
 
 
 def _render_inner_section(
-    title: str, rows: pd.DataFrame, layout_choice: int, min_ev: float
+    title: str,
+    rows: pd.DataFrame,
+    layout_choice: int,
+    min_ev: float,
+    show_ou: bool = False,
+    show_hdp: bool = False,
 ) -> None:
     if rows.empty:
         return
     st.html(f"<div class='ws-inner-section'>{escape(str(title))} ({len(rows)})</div>")
-    _render_cards_grid(rows, layout_choice, min_ev)
+    _render_cards_grid(rows, layout_choice, min_ev, show_ou=show_ou, show_hdp=show_hdp)
 
 
 def render_upcoming_matches() -> None:
@@ -560,6 +803,57 @@ def render_upcoming_matches() -> None:
         st.info("Aucun match futur disponible dans les predictions.")
         return
 
+    if "upcoming_excluded_leagues" not in st.session_state:
+        st.session_state.upcoming_excluded_leagues = _load_excluded_leagues()
+
+    all_league_options = _sort_options(
+        prepared["League"].dropna().astype(str).unique().tolist()
+    )
+    excluded_leagues = list(st.session_state.upcoming_excluded_leagues)
+    excluded_options = _sort_options(
+        list({*all_league_options, *excluded_leagues})
+    )
+
+    excluded_label = (
+        f"Ligues exclues ({len(excluded_leagues)})"
+        if excluded_leagues
+        else "Ligues exclues (liste persistante)"
+    )
+    with st.expander(excluded_label, expanded=False):
+        st.caption(
+            "Selectionnez les ligues a masquer durablement. La liste est sauvegardee sur disque."
+        )
+        new_excluded = st.multiselect(
+            "Ne pas afficher",
+            options=excluded_options,
+            default=excluded_leagues,
+            placeholder="Aucune ligue exclue",
+            key="upcoming_excluded_leagues_widget",
+            label_visibility="collapsed",
+        )
+        cols = st.columns((1, 1, 4))
+        add_all = cols[0].button("Tout exclure", key="upcoming_excluded_add_all")
+        clear_all = cols[1].button("Tout reinitialiser", key="upcoming_excluded_clear")
+        if add_all:
+            new_excluded = list(all_league_options)
+        if clear_all:
+            new_excluded = []
+        if sorted(new_excluded, key=str.lower) != sorted(excluded_leagues, key=str.lower):
+            _save_excluded_leagues(new_excluded)
+            st.session_state.upcoming_excluded_leagues = sorted(
+                {str(item) for item in new_excluded}, key=str.lower
+            )
+            st.rerun()
+
+    excluded_set = set(st.session_state.upcoming_excluded_leagues)
+    if excluded_set:
+        prepared = prepared[~prepared["League"].isin(excluded_set)].copy()
+        if prepared.empty:
+            st.info(
+                "Toutes les ligues disponibles sont exclues. Modifiez la liste ci-dessus."
+            )
+            return
+
     league_options = _sort_options(
         prepared["League"].dropna().astype(str).unique().tolist()
     )
@@ -599,9 +893,15 @@ def render_upcoming_matches() -> None:
         .lower()
     )
 
-    metric_filters = st.columns((1.4, 3.0))
+    metric_filters = st.columns((1.4, 1.2, 1.2, 3.0))
     only_opps = metric_filters[0].toggle("Opportunites", value=False)
-    min_ev = metric_filters[1].slider(
+    show_ou = metric_filters[1].toggle(
+        "Afficher OU", value=False, key="upcoming_show_ou"
+    )
+    show_hdp = metric_filters[2].toggle(
+        "Afficher HDP", value=False, key="upcoming_show_hdp"
+    )
+    min_ev = metric_filters[3].slider(
         "EV minimum (%)",
         min_value=-20.0,
         max_value=30.0,
@@ -699,7 +999,12 @@ def render_upcoming_matches() -> None:
                 for date_group in date_order:
                     time_df = league_df[league_df["date_group"] == date_group]
                     _render_inner_section(
-                        str(date_group), time_df, int(layout_choice), min_ev
+                        str(date_group),
+                        time_df,
+                        int(layout_choice),
+                        min_ev,
+                        show_ou=show_ou,
+                        show_hdp=show_hdp,
                     )
     else:
         cards_df = view.sort_values(
@@ -727,7 +1032,14 @@ def render_upcoming_matches() -> None:
                     date_df["League"].dropna().astype(str).unique().tolist()
                 ):
                     league_df = date_df[date_df["League"] == league]
-                    _render_inner_section(league, league_df, int(layout_choice), min_ev)
+                    _render_inner_section(
+                        league,
+                        league_df,
+                        int(layout_choice),
+                        min_ev,
+                        show_ou=show_ou,
+                        show_hdp=show_hdp,
+                    )
 
     st.divider()
     with st.expander("Tableau detaille", expanded=False):

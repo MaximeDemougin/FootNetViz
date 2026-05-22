@@ -955,6 +955,8 @@ def load_upcoming_ws_odds(user_id: int | None = None) -> pd.DataFrame:
                 p_calib_home,
                 p_calib_draw,
                 p_calib_away,
+                ou_preds,
+                hdp_preds,
                 maj AS feed_maj,
                 ROW_NUMBER() OVER (
                     PARTITION BY CAST(MatchId AS CHAR)
@@ -1083,6 +1085,8 @@ def load_upcoming_ws_odds(user_id: int | None = None) -> pd.DataFrame:
             aof.p_calib_home,
             aof.p_calib_draw,
             aof.p_calib_away,
+            aof.ou_preds,
+            aof.hdp_preds,
             aof.feed_maj,
             ba.analytics_at,
             ba.analytics_pred_odds,

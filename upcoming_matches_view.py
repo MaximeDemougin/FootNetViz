@@ -13,7 +13,9 @@ import streamlit as st
 from betting_data import get_db_status, load_upcoming_ws_odds
 
 
-EXCLUDED_LEAGUES_FILE = Path(__file__).resolve().parent / "data" / "excluded_leagues.json"
+EXCLUDED_LEAGUES_FILE = (
+    Path(__file__).resolve().parent / "data" / "excluded_leagues.json"
+)
 
 
 def _load_excluded_leagues() -> list[str]:
@@ -24,11 +26,15 @@ def _load_excluded_leagues() -> list[str]:
         return []
     if not isinstance(data, list):
         return []
-    return sorted({str(item).strip() for item in data if str(item).strip()}, key=str.lower)
+    return sorted(
+        {str(item).strip() for item in data if str(item).strip()}, key=str.lower
+    )
 
 
 def _save_excluded_leagues(values: list[str]) -> None:
-    cleaned = sorted({str(item).strip() for item in values if str(item).strip()}, key=str.lower)
+    cleaned = sorted(
+        {str(item).strip() for item in values if str(item).strip()}, key=str.lower
+    )
     EXCLUDED_LEAGUES_FILE.parent.mkdir(parents=True, exist_ok=True)
     with EXCLUDED_LEAGUES_FILE.open("w", encoding="utf-8") as handle:
         json.dump(cleaned, handle, ensure_ascii=False, indent=2)
@@ -251,7 +257,9 @@ def _fmt_line_label(line: str) -> str:
 
 def _ou_rows(ou_data: dict, min_ev: float) -> list[dict]:
     rows = []
-    for line, values in sorted(ou_data.items(), key=lambda kv: _line_sort_key(str(kv[0]))):
+    for line, values in sorted(
+        ou_data.items(), key=lambda kv: _line_sort_key(str(kv[0]))
+    ):
         if not isinstance(values, dict):
             continue
         over_max = pd.to_numeric(values.get("over_max"), errors="coerce")
@@ -274,7 +282,9 @@ def _ou_rows(ou_data: dict, min_ev: float) -> list[dict]:
 
 def _hdp_rows(hdp_data: dict, min_ev: float) -> list[dict]:
     rows = []
-    for line, values in sorted(hdp_data.items(), key=lambda kv: _line_sort_key(str(kv[0]))):
+    for line, values in sorted(
+        hdp_data.items(), key=lambda kv: _line_sort_key(str(kv[0]))
+    ):
         if not isinstance(values, dict):
             continue
         home_max = pd.to_numeric(values.get("hdp_home_max"), errors="coerce")
@@ -302,13 +312,13 @@ def _ou_table_html(ou_data: dict, min_ev: float) -> str:
     body = "".join(
         f"""
         <div class='ws-ouhdp-row'>
-            <span class='ws-ouhdp-line'>{escape(_fmt_line_label(item['line']))}</span>
-            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item['over_max'])}</span></span>
-            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item['over_pred'])}</span></span>
-            <span class='ws-ev{_ev_class(item['ev_over'], min_ev)}'>{_fmt_pct(item['ev_over'])}</span>
-            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item['under_max'])}</span></span>
-            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item['under_pred'])}</span></span>
-            <span class='ws-ev{_ev_class(item['ev_under'], min_ev)}'>{_fmt_pct(item['ev_under'])}</span>
+            <span class='ws-ouhdp-line'>{escape(_fmt_line_label(item["line"]))}</span>
+            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item["over_max"])}</span></span>
+            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item["over_pred"])}</span></span>
+            <span class='ws-ev{_ev_class(item["ev_over"], min_ev)}'>{_fmt_pct(item["ev_over"])}</span>
+            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item["under_max"])}</span></span>
+            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item["under_pred"])}</span></span>
+            <span class='ws-ev{_ev_class(item["ev_under"], min_ev)}'>{_fmt_pct(item["ev_under"])}</span>
         </div>
         """
         for item in rows
@@ -333,13 +343,13 @@ def _hdp_table_html(hdp_data: dict, min_ev: float) -> str:
     body = "".join(
         f"""
         <div class='ws-ouhdp-row'>
-            <span class='ws-ouhdp-line'>{escape(_fmt_line_label(item['line']))}</span>
-            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item['home_max'])}</span></span>
-            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item['home_pred'])}</span></span>
-            <span class='ws-ev{_ev_class(item['ev_home'], min_ev)}'>{_fmt_pct(item['ev_home'])}</span>
-            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item['away_max'])}</span></span>
-            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item['away_pred'])}</span></span>
-            <span class='ws-ev{_ev_class(item['ev_away'], min_ev)}'>{_fmt_pct(item['ev_away'])}</span>
+            <span class='ws-ouhdp-line'>{escape(_fmt_line_label(item["line"]))}</span>
+            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item["home_max"])}</span></span>
+            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item["home_pred"])}</span></span>
+            <span class='ws-ev{_ev_class(item["ev_home"], min_ev)}'>{_fmt_pct(item["ev_home"])}</span>
+            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item["away_max"])}</span></span>
+            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item["away_pred"])}</span></span>
+            <span class='ws-ev{_ev_class(item["ev_away"], min_ev)}'>{_fmt_pct(item["ev_away"])}</span>
         </div>
         """
         for item in rows
@@ -810,9 +820,7 @@ def render_upcoming_matches() -> None:
         prepared["League"].dropna().astype(str).unique().tolist()
     )
     excluded_leagues = list(st.session_state.upcoming_excluded_leagues)
-    excluded_options = _sort_options(
-        list({*all_league_options, *excluded_leagues})
-    )
+    excluded_options = _sort_options(list({*all_league_options, *excluded_leagues}))
 
     excluded_label = (
         f"Ligues exclues ({len(excluded_leagues)})"
@@ -838,7 +846,9 @@ def render_upcoming_matches() -> None:
             new_excluded = list(all_league_options)
         if clear_all:
             new_excluded = []
-        if sorted(new_excluded, key=str.lower) != sorted(excluded_leagues, key=str.lower):
+        if sorted(new_excluded, key=str.lower) != sorted(
+            excluded_leagues, key=str.lower
+        ):
             _save_excluded_leagues(new_excluded)
             st.session_state.upcoming_excluded_leagues = sorted(
                 {str(item) for item in new_excluded}, key=str.lower

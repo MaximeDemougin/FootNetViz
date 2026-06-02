@@ -323,6 +323,9 @@ def load_bet_results(user_id: int | None = None) -> pd.DataFrame:
             aofagg.AwayTeam,
             aofagg.HomeTeam_clean,
             aofagg.AwayTeam_clean,
+            aofagg.p_calib_home,
+            aofagg.p_calib_draw,
+            aofagg.p_calib_away,
             NULL AS team_name,
             NULL AS pred_odds,
             NULL AS ev_pct,
@@ -348,7 +351,10 @@ def load_bet_results(user_id: int | None = None) -> pd.DataFrame:
                 MAX(HomeTeam) AS HomeTeam,
                 MAX(AwayTeam) AS AwayTeam,
                 MAX(HomeTeam_clean) AS HomeTeam_clean,
-                MAX(AwayTeam_clean) AS AwayTeam_clean
+                MAX(AwayTeam_clean) AS AwayTeam_clean,
+                MAX(p_calib_home) AS p_calib_home,
+                MAX(p_calib_draw) AS p_calib_draw,
+                MAX(p_calib_away) AS p_calib_away
             FROM AsianOdds_feeds
             GROUP BY MatchId
         ) aofagg
@@ -386,6 +392,9 @@ def load_bet_results(user_id: int | None = None) -> pd.DataFrame:
         "pred",
         "value",
         "delta_time_min",
+        "p_calib_home",
+        "p_calib_draw",
+        "p_calib_away",
     ]
     for column in numeric_columns:
         bets[column] = pd.to_numeric(bets[column], errors="coerce")
@@ -396,6 +405,7 @@ def load_bet_results(user_id: int | None = None) -> pd.DataFrame:
         .fillna(bets["selection"])
         .fillna(bets["MatchId"].astype("string"))
     )
+    bets["pred_odds"] = bets.apply(_compute_effective_pred_odds, axis=1)
     bets["display_date"] = bets["settledDate"]
     bets["display_date"] = bets["display_date"].fillna(bets["matchedDate"])
     bets["display_date"] = bets["display_date"].fillna(bets["created_at"])
@@ -708,6 +718,63 @@ def _split_league_label(value: object) -> tuple[str, str]:
 def _normalize_bet_token(value: Any) -> str:
     text = str(value or "").strip().lower()
     return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def _resolve_market_side(row: pd.Series) -> str:
+    selection_token = _normalize_bet_token(row.get("selection"))
+    if selection_token in {"x", "draw", "matchnul", "nul", "tie", "thedraw"}:
+        return "draw"
+
+    home_token = _normalize_bet_token(row.get("HomeTeam_clean") or row.get("HomeTeam"))
+    away_token = _normalize_bet_token(row.get("AwayTeam_clean") or row.get("AwayTeam"))
+
+    if selection_token and home_token and (
+        selection_token == home_token
+        or selection_token in home_token
+        or home_token in selection_token
+    ):
+        return "home"
+
+    if selection_token and away_token and (
+        selection_token == away_token
+        or selection_token in away_token
+        or away_token in selection_token
+    ):
+        return "away"
+
+    bet_side_token = _normalize_bet_token(row.get("bet"))
+    if bet_side_token in {"2", "h", "home", "1"}:
+        return "home"
+    if bet_side_token in {"1", "x", "d", "draw", "tie"}:
+        return "draw"
+    if bet_side_token in {"0", "a", "away"}:
+        return "away"
+
+    return "unknown"
+
+
+def _compute_effective_pred_odds(row: pd.Series) -> float:
+    side = _resolve_market_side(row)
+    if side == "home":
+        probability = row.get("p_calib_home")
+    elif side == "draw":
+        probability = row.get("p_calib_draw")
+    elif side == "away":
+        probability = row.get("p_calib_away")
+    else:
+        return np.nan
+
+    probability = pd.to_numeric(probability, errors="coerce")
+    if pd.isna(probability) or float(probability) <= 0:
+        return np.nan
+
+    prob = float(probability)
+    if prob > 1.0 and prob <= 100.0:
+        prob = prob / 100.0
+    if prob <= 0:
+        return np.nan
+
+    return 1.0 / prob
 
 
 def _clean_match_side(value: Any) -> str:

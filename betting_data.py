@@ -728,17 +728,25 @@ def _resolve_market_side(row: pd.Series) -> str:
     home_token = _normalize_bet_token(row.get("HomeTeam_clean") or row.get("HomeTeam"))
     away_token = _normalize_bet_token(row.get("AwayTeam_clean") or row.get("AwayTeam"))
 
-    if selection_token and home_token and (
-        selection_token == home_token
-        or selection_token in home_token
-        or home_token in selection_token
+    if (
+        selection_token
+        and home_token
+        and (
+            selection_token == home_token
+            or selection_token in home_token
+            or home_token in selection_token
+        )
     ):
         return "home"
 
-    if selection_token and away_token and (
-        selection_token == away_token
-        or selection_token in away_token
-        or away_token in selection_token
+    if (
+        selection_token
+        and away_token
+        and (
+            selection_token == away_token
+            or selection_token in away_token
+            or away_token in selection_token
+        )
     ):
         return "away"
 

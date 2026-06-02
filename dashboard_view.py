@@ -18,21 +18,21 @@ from betting_data import (
 def render_dashboard() -> None:
     db_status = get_db_status()
     if db_status["connected"] != "true":
-        st.title("Dashboard paris")
-        st.caption("Connexion FootNet requise pour charger les resultats `Bet_p`.")
+        st.title("Resultats FootNet")
+        st.caption("Connexion FootNet requise pour charger les resultats utilisateur.")
         st.info(db_status["reason"])
         return
 
     user_id = st.session_state.get("selected_user_id")
     if user_id is None:
-        st.title("Dashboard paris")
-        st.caption("Aucun utilisateur `Bet_p` disponible.")
+        st.title("Resultats FootNet")
+        st.caption("Aucun utilisateur disponible.")
         return
 
     bets = load_bet_results(int(user_id))
     if bets.empty:
-        st.title("Dashboard paris")
-        st.caption(f"Aucun pari retourne pour l'utilisateur {user_id}.")
+        st.title("Resultats FootNet")
+        st.caption(f"Aucun resultat retourne pour l'utilisateur {user_id}.")
         return
 
     dashboard_bets = prepare_dashboard_bets(bets)
@@ -47,8 +47,8 @@ def render_dashboard() -> None:
     roi_min = float(roi_expected.min()) if not roi_expected.empty else -10.0
     roi_max = float(roi_expected.quantile(0.98)) if not roi_expected.empty else 50.0
 
-    st.title("Dashboard paris")
-    st.caption(f"Resultats Bet_p - {bets.iloc[0]['username']}")
+    st.title("Resultats FootNet")
+    st.caption(f"Historique utilisateur - {bets.iloc[0]['username']}")
 
     with st.sidebar:
         st.divider()
@@ -100,7 +100,7 @@ def render_dashboard() -> None:
     ]
 
     if filtered.empty:
-        st.warning("Aucun pari ne correspond aux filtres courants.")
+        st.warning("Aucun resultat ne correspond aux filtres courants.")
         return
 
     metric_source = filtered.assign(

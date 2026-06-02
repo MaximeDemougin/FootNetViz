@@ -323,13 +323,13 @@ def load_bet_results(user_id: int | None = None) -> pd.DataFrame:
             aofagg.AwayTeam,
             aofagg.HomeTeam_clean,
             aofagg.AwayTeam_clean,
-            baagg.team_name,
-            baagg.pred_odds,
-            baagg.ev_pct,
-            baagg.strategy,
-            baagg.reason,
-            baagg.analytics_matched_stake,
-            baagg.analytics_matched_odds
+            NULL AS team_name,
+            NULL AS pred_odds,
+            NULL AS ev_pct,
+            NULL AS strategy,
+            NULL AS reason,
+            NULL AS analytics_matched_stake,
+            NULL AS analytics_matched_odds
         FROM bp_ranked bp
         LEFT JOIN Users u
             ON bp.ID_USER = u.ID_USER
@@ -353,22 +353,6 @@ def load_bet_results(user_id: int | None = None) -> pd.DataFrame:
             GROUP BY MatchId
         ) aofagg
             ON CAST(aofagg.MatchId AS CHAR) = CAST(bp.MatchId AS CHAR)
-        LEFT JOIN (
-            SELECT
-                ID_USER,
-                ID_MARKET,
-                MAX(team_name) AS team_name,
-                AVG(pred_odds) AS pred_odds,
-                AVG(ev_pct) AS ev_pct,
-                MAX(strategy) AS strategy,
-                MAX(reason) AS reason,
-                SUM(matched_stake) AS analytics_matched_stake,
-                AVG(matched_odds) AS analytics_matched_odds
-            FROM Bet_analytics
-            GROUP BY ID_USER, ID_MARKET
-        ) baagg
-            ON bp.ID_USER = baagg.ID_USER
-           AND bp.ID_MARKET = baagg.ID_MARKET
         WHERE (:user_id IS NULL OR bp.ID_USER = :user_id)
         ORDER BY COALESCE(ob.settledDate, ob.matchedDate, bp.created_at) DESC, bp.ID_BET DESC
     """

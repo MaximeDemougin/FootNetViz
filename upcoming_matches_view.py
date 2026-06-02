@@ -577,8 +577,8 @@ def _market_card_html(
     if pd.notna(row.get("analytics_ev_pct")) or pd.notna(row.get("user_bets_count")):
         bets_count = _safe_int(row.get("user_bets_count"))
         analytics = (
-            f"<div class='ws-meta'>Analytics EV {_fmt_pct(row.get('analytics_ev_pct'))} | "
-            f"Paris utilisateur {bets_count}</div>"
+            f"<div class='ws-meta'>Signal EV {_fmt_pct(row.get('analytics_ev_pct'))} | "
+            f"Actions utilisateur {bets_count}</div>"
         )
 
     rows = "".join(_outcome_row(row, outcome, min_ev) for outcome in OUTCOMES)

@@ -47,7 +47,7 @@ with st.sidebar:
                 else "Derniere activite indisponible"
             )
         else:
-            st.warning("Aucun utilisateur trouve dans Bet_p.")
+            st.warning("Aucun utilisateur FootNet trouve.")
     else:
         st.error("Connexion BDD indisponible")
         st.caption(db_status["reason"])

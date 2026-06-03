@@ -211,7 +211,7 @@ def load_bet_results(user_id: int | None = None) -> pd.DataFrame:
                 bp.pred,
                 bp.value,
                 bp.delta_time_min,
-                bp.match_type,
+                bp.market_type AS match_type,
                 bp.liability,
                 bp.potential_profit,
                 ROW_NUMBER() OVER (
@@ -1240,6 +1240,111 @@ def load_upcoming_ws_odds(user_id: int | None = None) -> pd.DataFrame:
         "analytics_matched_stake",
         "user_bets_count",
         "user_bets_stake",
+    ]
+    for column in numeric_columns:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    return df.reset_index(drop=True)
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def load_ws_odds_hdp() -> pd.DataFrame:
+    """Latest live Asian-handicap back/lay odds per (market_id, hdp_line).
+
+    Resolves each handicap market_id to its sibling 1X2 ``ID_MARKET`` (the key
+    used by the upcoming-matches view) through ``Betfair_links_p.all_markets``.
+    """
+    query = """
+        WITH ranked AS (
+            SELECT
+                h.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY h.market_id, h.hdp_line
+                    ORDER BY h.updated_at DESC, h.id DESC
+                ) AS row_rank
+            FROM WS_odds_hdp h
+        ),
+        links AS (
+            SELECT
+                hdp_market_id,
+                link_market_id,
+                link_match_id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY hdp_market_id
+                    ORDER BY id_betfair DESC
+                ) AS link_rank
+            FROM (
+                SELECT
+                    bl.ID_BETFAIR AS id_betfair,
+                    bl.ID_MARKET AS link_market_id,
+                    bl.MatchId AS link_match_id,
+                    jt.hdp_market_id
+                FROM Betfair_links_p bl
+                JOIN JSON_TABLE(
+                    bl.all_markets,
+                    '$[*]' COLUMNS (hdp_market_id VARCHAR(20) PATH '$.marketId')
+                ) jt
+            ) expanded
+        )
+        SELECT
+            r.market_id,
+            l.link_market_id,
+            l.link_match_id,
+            r.hdp_line,
+            r.home_name,
+            r.away_name,
+            COALESCE(r.inplay, 0) AS inplay,
+            COALESCE(r.status, 'OPEN') AS status,
+            r.home_back, r.home_back_1, r.home_back_2,
+            r.home_lay, r.home_lay_1, r.home_lay_2,
+            r.away_back, r.away_back_1, r.away_back_2,
+            r.away_lay, r.away_lay_1, r.away_lay_2,
+            r.home_back_size, r.home_back_1_size, r.home_back_2_size,
+            r.home_lay_size, r.home_lay_1_size, r.home_lay_2_size,
+            r.away_back_size, r.away_back_1_size, r.away_back_2_size,
+            r.away_lay_size, r.away_lay_1_size, r.away_lay_2_size,
+            COALESCE(r.n_updates, 0) AS n_updates,
+            r.updated_at
+        FROM ranked r
+        LEFT JOIN links l
+            ON l.hdp_market_id = r.market_id
+           AND l.link_rank = 1
+        WHERE r.row_rank = 1
+    """
+    df = _query_dataframe(query)
+    if df.empty:
+        return df
+
+    df["updated_at"] = pd.to_datetime(df["updated_at"], errors="coerce")
+    numeric_columns = [
+        "hdp_line",
+        "inplay",
+        "n_updates",
+        "home_back",
+        "home_back_1",
+        "home_back_2",
+        "home_lay",
+        "home_lay_1",
+        "home_lay_2",
+        "away_back",
+        "away_back_1",
+        "away_back_2",
+        "away_lay",
+        "away_lay_1",
+        "away_lay_2",
+        "home_back_size",
+        "home_back_1_size",
+        "home_back_2_size",
+        "home_lay_size",
+        "home_lay_1_size",
+        "home_lay_2_size",
+        "away_back_size",
+        "away_back_1_size",
+        "away_back_2_size",
+        "away_lay_size",
+        "away_lay_1_size",
+        "away_lay_2_size",
     ]
     for column in numeric_columns:
         if column in df.columns:

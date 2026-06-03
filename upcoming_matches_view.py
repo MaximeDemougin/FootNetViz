@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from betting_data import get_db_status, load_upcoming_ws_odds
+from betting_data import get_db_status, load_upcoming_ws_odds, load_ws_odds_hdp
 
 
 EXCLUDED_LEAGUES_FILE = (
@@ -214,6 +214,53 @@ def _parse_json_dict(value: object) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _build_hdp_live_map(hdp_df: pd.DataFrame) -> dict[str, dict[float, dict]]:
+    """Map 1X2 ID_MARKET -> {rounded hdp_line -> latest WS_odds_hdp record}."""
+    mapping: dict[str, dict[float, dict]] = {}
+    if hdp_df is None or hdp_df.empty:
+        return mapping
+    for record in hdp_df.to_dict("records"):
+        market_id = str(record.get("link_market_id") or "").strip()
+        line = pd.to_numeric(record.get("hdp_line"), errors="coerce")
+        if not market_id or pd.isna(line):
+            continue
+        mapping.setdefault(market_id, {})[round(float(line), 2)] = record
+    return mapping
+
+
+def _best_live_side(record: dict, side: str) -> dict:
+    """Best back (max) and lay (min) odds with sizes for a side of a live HDP line."""
+    back_pairs = [
+        (record.get(f"{side}_back"), record.get(f"{side}_back_size")),
+        (record.get(f"{side}_back_1"), record.get(f"{side}_back_1_size")),
+        (record.get(f"{side}_back_2"), record.get(f"{side}_back_2_size")),
+    ]
+    lay_pairs = [
+        (record.get(f"{side}_lay"), record.get(f"{side}_lay_size")),
+        (record.get(f"{side}_lay_1"), record.get(f"{side}_lay_1_size")),
+        (record.get(f"{side}_lay_2"), record.get(f"{side}_lay_2_size")),
+    ]
+    best_back, best_back_size = np.nan, np.nan
+    for odd, size in back_pairs:
+        value = pd.to_numeric(odd, errors="coerce")
+        if pd.notna(value) and float(value) > 1.0:
+            if pd.isna(best_back) or float(value) > float(best_back):
+                best_back, best_back_size = float(value), size
+    best_lay, best_lay_size = np.nan, np.nan
+    for odd, size in lay_pairs:
+        value = pd.to_numeric(odd, errors="coerce")
+        if pd.notna(value) and float(value) > 1.0:
+            if pd.isna(best_lay) or float(value) < float(best_lay):
+                best_lay, best_lay_size = float(value), size
+    return {
+        "back": best_back,
+        "back_size": best_back_size,
+        "lay": best_lay,
+        "lay_size": best_lay_size,
+    }
+
+
+
 _LINE_RE = re.compile(r"^(-?\d+(?:\.\d+)?)(?:-(-?\d+(?:\.\d+)?))?$")
 
 
@@ -280,7 +327,8 @@ def _ou_rows(ou_data: dict, min_ev: float) -> list[dict]:
     return rows
 
 
-def _hdp_rows(hdp_data: dict, min_ev: float) -> list[dict]:
+def _hdp_rows(hdp_data: dict, min_ev: float, hdp_live: dict | None = None) -> list[dict]:
+    live = hdp_live or {}
     rows = []
     for line, values in sorted(
         hdp_data.items(), key=lambda kv: _line_sort_key(str(kv[0]))
@@ -291,15 +339,44 @@ def _hdp_rows(hdp_data: dict, min_ev: float) -> list[dict]:
         home_pred = pd.to_numeric(values.get("hdp_home_pred"), errors="coerce")
         away_max = pd.to_numeric(values.get("hdp_away_max"), errors="coerce")
         away_pred = pd.to_numeric(values.get("hdp_away_pred"), errors="coerce")
+
+        low, high, _ = _parse_line(str(line))
+        record = None
+        if low is not None and high is not None:
+            record = live.get(round((low + high) / 2.0, 2))
+        home_live = _best_live_side(record, "home") if record else {}
+        away_live = _best_live_side(record, "away") if record else {}
+        has_live = bool(record) and (
+            pd.notna(home_live.get("back"))
+            or pd.notna(home_live.get("lay"))
+            or pd.notna(away_live.get("back"))
+            or pd.notna(away_live.get("lay"))
+        )
+
+        home_best_back = home_live.get("back") if has_live else np.nan
+        away_best_back = away_live.get("back") if has_live else np.nan
         rows.append(
             {
                 "line": str(line),
+                "has_live": has_live,
                 "home_max": home_max,
                 "home_pred": home_pred,
                 "away_max": away_max,
                 "away_pred": away_pred,
-                "ev_home": _ev_back(home_max, home_pred),
-                "ev_away": _ev_back(away_max, away_pred),
+                "home_back": home_live.get("back", np.nan),
+                "home_back_size": home_live.get("back_size", np.nan),
+                "home_lay": home_live.get("lay", np.nan),
+                "home_lay_size": home_live.get("lay_size", np.nan),
+                "away_back": away_live.get("back", np.nan),
+                "away_back_size": away_live.get("back_size", np.nan),
+                "away_lay": away_live.get("lay", np.nan),
+                "away_lay_size": away_live.get("lay_size", np.nan),
+                "ev_home": _ev_back(
+                    home_best_back if has_live else home_max, home_pred
+                ),
+                "ev_away": _ev_back(
+                    away_best_back if has_live else away_max, away_pred
+                ),
             }
         )
     return rows
@@ -336,31 +413,54 @@ def _ou_table_html(ou_data: dict, min_ev: float) -> str:
     """
 
 
-def _hdp_table_html(hdp_data: dict, min_ev: float) -> str:
-    rows = _hdp_rows(hdp_data, min_ev)
+def _hdp_table_html(hdp_data: dict, min_ev: float, hdp_live: dict | None = None) -> str:
+    rows = _hdp_rows(hdp_data, min_ev, hdp_live)
     if not rows:
         return ""
+
+    def _back_cell(odd: object, size: object) -> str:
+        size_label = _fmt_size(size)
+        size_html = f"<span class='ws-size'>{size_label}</span>" if size_label else ""
+        return (
+            "<strong class='ws-back'>"
+            f"<span class='ws-odd'>{_fmt_odd(odd)}</span>{size_html}</strong>"
+        )
+
+    def _lay_cell(odd: object, size: object) -> str:
+        size_label = _fmt_size(size)
+        size_html = f"<span class='ws-size'>{size_label}</span>" if size_label else ""
+        return (
+            "<strong class='ws-lay'>"
+            f"<span class='ws-odd'>{_fmt_odd(odd)}</span>{size_html}</strong>"
+        )
+
+    live_count = sum(1 for item in rows if item["has_live"])
     body = "".join(
         f"""
-        <div class='ws-ouhdp-row'>
+        <div class='ws-hdp-row'>
             <span class='ws-ouhdp-line'>{escape(_fmt_line_label(item["line"]))}</span>
-            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item["home_max"])}</span></span>
+            {_back_cell(item["home_back"], item["home_back_size"]) if item["has_live"] else f"<span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item["home_max"])}</span></span>"}
+            {_lay_cell(item["home_lay"], item["home_lay_size"]) if item["has_live"] else "<span class='ws-chip ws-chip-empty'>-</span>"}
             <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item["home_pred"])}</span></span>
             <span class='ws-ev{_ev_class(item["ev_home"], min_ev)}'>{_fmt_pct(item["ev_home"])}</span>
-            <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item["away_max"])}</span></span>
+            {_back_cell(item["away_back"], item["away_back_size"]) if item["has_live"] else f"<span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item["away_max"])}</span></span>"}
+            {_lay_cell(item["away_lay"], item["away_lay_size"]) if item["has_live"] else "<span class='ws-chip ws-chip-empty'>-</span>"}
             <span class='ws-chip'><span class='ws-odd'>{_fmt_odd(item["away_pred"])}</span></span>
             <span class='ws-ev{_ev_class(item["ev_away"], min_ev)}'>{_fmt_pct(item["ev_away"])}</span>
         </div>
         """
         for item in rows
     )
+    live_badge = (
+        f"<span class='ws-live-badge'>LIVE {live_count}</span>" if live_count else ""
+    )
     return f"""
     <div class='ws-ouhdp'>
-        <div class='ws-ouhdp-title'>Handicap asiatique</div>
-        <div class='ws-ouhdp-head'>
+        <div class='ws-ouhdp-title'>Handicap asiatique {live_badge}</div>
+        <div class='ws-hdp-head'>
             <span class='ws-ouhdp-line'>Line</span>
-            <span>H max</span><span>H fair</span><span>EV H</span>
-            <span>A max</span><span>A fair</span><span>EV A</span>
+            <span>H back</span><span>H lay</span><span>H fair</span><span>EV H</span>
+            <span>A back</span><span>A lay</span><span>A fair</span><span>EV A</span>
         </div>
         {body}
     </div>
@@ -587,7 +687,11 @@ def _market_card_html(
     if show_ou:
         extras_html += _ou_table_html(row.get("ou_preds_parsed") or {}, min_ev)
     if show_hdp:
-        extras_html += _hdp_table_html(row.get("hdp_preds_parsed") or {}, min_ev)
+        extras_html += _hdp_table_html(
+            row.get("hdp_preds_parsed") or {},
+            min_ev,
+            row.get("hdp_live_parsed") or {},
+        )
     return f"""
 <div class='ws-card'>
     <div class='ws-head'>
@@ -707,6 +811,30 @@ _WS_CSS = """
 }
 .ws-ouhdp-head span { font-size: 10px; color: #5e6d82; font-weight: 800; text-align: center; }
 .ws-ouhdp-line { font-size: clamp(10px, 0.75vw, 12px); color: #10233f; text-align: center; font-weight: 800; }
+.ws-hdp-head, .ws-hdp-row {
+    display: grid;
+    grid-template-columns: minmax(44px, 0.8fr) repeat(8, minmax(0, 1fr));
+    gap: 2px;
+    align-items: center;
+    margin-bottom: 2px;
+    width: 100%;
+}
+.ws-hdp-head span { font-size: 10px; color: #5e6d82; font-weight: 800; text-align: center; }
+.ws-hdp-row strong, .ws-hdp-row .ws-chip, .ws-hdp-row .ws-ev {
+    text-align: center; font-size: clamp(9px, 0.7vw, 12px); border-radius: 6px;
+    padding: clamp(2px, 0.4vw, 4px) 2px; min-height: 30px; display: flex;
+    flex-direction: column; align-items: center; justify-content: center;
+    line-height: 1.05; box-sizing: border-box; min-width: 0; overflow: hidden;
+}
+.ws-chip-empty { color: #94a3b8; }
+.ws-live-badge {
+    display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px;
+    font-size: 9px; font-weight: 800; letter-spacing: 0.4px;
+    background: rgba(34,197,94,0.16); color: #15803d; border: 1px solid rgba(34,197,94,0.35);
+}
+@media (max-width: 900px) {
+    .ws-hdp-head, .ws-hdp-row { grid-template-columns: minmax(40px, 0.7fr) repeat(8, minmax(28px, 1fr)); gap: 1px; }
+}
 @media (max-width: 900px) {
     .ws-head { flex-direction: column; }
     .ws-right { justify-content: flex-start; }
@@ -804,6 +932,11 @@ def render_upcoming_matches() -> None:
     if prepared.empty:
         st.info("Aucun match a venir disponible.")
         return
+
+    hdp_live_map = _build_hdp_live_map(load_ws_odds_hdp())
+    prepared["hdp_live_parsed"] = prepared["ID_MARKET"].map(
+        lambda market_id: hdp_live_map.get(str(market_id).strip(), {})
+    )
 
     now_ts = pd.Timestamp.now()
     prepared = prepared[

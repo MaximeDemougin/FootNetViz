@@ -191,6 +191,97 @@ def get_user_catalog() -> pd.DataFrame:
     return users
 
 
+def _aggregate_duplicate_bets(bets: pd.DataFrame) -> pd.DataFrame:
+    """Merge multiple bets on the same match/market/selection into one line.
+
+    Stakes, liabilities, expected gains and matched stakes are summed, while the
+    placed odds (and matched odds) are stake-weighted averages of the legs.
+    """
+    if bets.empty:
+        return bets
+
+    group_keys = [
+        key
+        for key in ("ID_USER", "MatchId", "ID_MARKET", "bet", "bet_libelle", "side_back_lay")
+        if key in bets.columns
+    ]
+    if not group_keys or not bets.duplicated(subset=group_keys, keep=False).any():
+        return bets
+
+    df = bets.copy()
+    stake = pd.to_numeric(df["stake"], errors="coerce").fillna(0.0)
+    odds = pd.to_numeric(df["placed_odds"], errors="coerce")
+    matched_stake = pd.to_numeric(df.get("matched_stake"), errors="coerce")
+    matched_odds = pd.to_numeric(df.get("matched_odds"), errors="coerce")
+
+    df["_stake_w"] = stake
+    df["_odds_num"] = stake * odds.fillna(0.0)
+    df["_mstake_w"] = matched_stake.fillna(0.0)
+    df["_modds_num"] = matched_stake.fillna(0.0) * matched_odds.fillna(0.0)
+
+    weighted_cols = [
+        col for col in ("pred", "value", "delta_time_min") if col in df.columns
+    ]
+    for col in weighted_cols:
+        df[f"_wnum_{col}"] = stake * pd.to_numeric(df[col], errors="coerce")
+
+    sum_cols = {"stake", "liability", "potential_profit", "matched_stake"}
+    min_cols = {
+        col for col in ("created_at", "placedDate", "marketStartDate") if col in df.columns
+    }
+    max_cols = {col for col in ("matchedDate", "settledDate") if col in df.columns}
+
+    agg: dict[str, Any] = {}
+    for col in df.columns:
+        if col in group_keys or col.startswith("_"):
+            continue
+        if col in sum_cols:
+            agg[col] = "sum"
+        elif col == "profit":
+            agg[col] = lambda series: series.sum(min_count=1)
+        elif col in min_cols:
+            agg[col] = "min"
+        elif col in max_cols:
+            agg[col] = "max"
+        else:
+            agg[col] = "first"
+
+    agg["_stake_w"] = "sum"
+    agg["_odds_num"] = "sum"
+    agg["_mstake_w"] = "sum"
+    agg["_modds_num"] = "sum"
+    for col in weighted_cols:
+        agg[f"_wnum_{col}"] = "sum"
+
+    grouped = (
+        df.groupby(group_keys, dropna=False, sort=False).agg(agg).reset_index()
+    )
+
+    total_stake = grouped["_stake_w"]
+    stake_mask = total_stake > 0
+    grouped.loc[stake_mask, "placed_odds"] = (
+        grouped.loc[stake_mask, "_odds_num"] / total_stake[stake_mask]
+    )
+
+    total_mstake = grouped["_mstake_w"]
+    mstake_mask = total_mstake > 0
+    grouped.loc[mstake_mask, "matched_odds"] = (
+        grouped.loc[mstake_mask, "_modds_num"] / total_mstake[mstake_mask]
+    )
+
+    for col in weighted_cols:
+        grouped.loc[stake_mask, col] = (
+            grouped.loc[stake_mask, f"_wnum_{col}"] / total_stake[stake_mask]
+        )
+
+    helper_cols = [c for c in grouped.columns if c.startswith("_")]
+    grouped = grouped.drop(columns=helper_cols)
+
+    ordered_cols = [c for c in bets.columns if c in grouped.columns]
+    extra_cols = [c for c in grouped.columns if c not in ordered_cols]
+    return grouped[ordered_cols + extra_cols]
+
+
 @st.cache_data(ttl=120, show_spinner=False)
 def load_bet_results(user_id: int | None = None) -> pd.DataFrame:
     query = f"""
@@ -398,6 +489,8 @@ def load_bet_results(user_id: int | None = None) -> pd.DataFrame:
     ]
     for column in numeric_columns:
         bets[column] = pd.to_numeric(bets[column], errors="coerce")
+
+    bets = _aggregate_duplicate_bets(bets)
 
     bets["selection"] = bets["bet_libelle"].fillna(bets["team_name"])
     bets["event_label"] = (

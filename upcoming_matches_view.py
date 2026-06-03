@@ -260,7 +260,6 @@ def _best_live_side(record: dict, side: str) -> dict:
     }
 
 
-
 _LINE_RE = re.compile(r"^(-?\d+(?:\.\d+)?)(?:-(-?\d+(?:\.\d+)?))?$")
 
 
@@ -327,7 +326,9 @@ def _ou_rows(ou_data: dict, min_ev: float) -> list[dict]:
     return rows
 
 
-def _hdp_rows(hdp_data: dict, min_ev: float, hdp_live: dict | None = None) -> list[dict]:
+def _hdp_rows(
+    hdp_data: dict, min_ev: float, hdp_live: dict | None = None
+) -> list[dict]:
     live = hdp_live or {}
     rows = []
     for line, values in sorted(

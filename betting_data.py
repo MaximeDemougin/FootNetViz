@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from datetime import datetime
@@ -13,6 +14,7 @@ from sqlalchemy.engine import Engine, make_url
 
 DEFAULT_DB_NAME = "FootNet"
 ORBITX_COMMISSION_RATE = 0.03
+EXCHANGE_COMMISSION_RATE = 0.03
 MATCH_PRECISION = 6
 
 
@@ -1442,5 +1444,328 @@ def load_ws_odds_hdp() -> pd.DataFrame:
     for column in numeric_columns:
         if column in df.columns:
             df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    return df.reset_index(drop=True)
+
+
+_HDP_LINE_RE = re.compile(r"^(-?\d+(?:\.\d+)?)(?:-(-?\d+(?:\.\d+)?))?$")
+
+
+def _parse_hdp_line_label(line: object) -> tuple[float, float] | None:
+    text = str(line).strip()
+    match = _HDP_LINE_RE.match(text)
+    if not match:
+        return None
+    first = float(match.group(1))
+    second_raw = match.group(2)
+    if second_raw is None:
+        return first, first
+    second = float(second_raw)
+    if text.startswith("-") and second >= 0:
+        second = -second
+    return min(first, second), max(first, second)
+
+
+def _split_handicap_line(line: float) -> tuple[float, float]:
+    rounded = round(float(line) * 4.0) / 4.0
+    frac = abs(rounded - int(rounded))
+    if np.isclose(frac, 0.25) or np.isclose(frac, 0.75):
+        return rounded - 0.25, rounded + 0.25
+    return rounded, rounded
+
+
+def _parse_score(result_text: object) -> tuple[float, float] | None:
+    text = str(result_text or "").strip()
+    match = re.search(r"(\d+)\s*:\s*(\d+)", text)
+    if not match:
+        return None
+    return float(match.group(1)), float(match.group(2))
+
+
+def _asian_leg_outcome(goal_diff: float, handicap: float, side: str) -> float:
+    margin = goal_diff + float(handicap)
+    if side == "away":
+        margin = -margin
+    if margin > 0:
+        return 1.0
+    if margin < 0:
+        return -1.0
+    return 0.0
+
+
+def _asian_profit_per_unit(
+    goal_diff: float,
+    line: float,
+    side: str,
+    odds: float,
+    position: str = "back",
+    commission_rate: float = EXCHANGE_COMMISSION_RATE,
+) -> tuple[float, float]:
+    h1, h2 = _split_handicap_line(line)
+    outcomes = [_asian_leg_outcome(goal_diff, h1, side), _asian_leg_outcome(goal_diff, h2, side)]
+    avg_outcome = float(np.mean(outcomes))
+
+    profits = []
+    for outcome in outcomes:
+        if position == "lay":
+            if outcome < 0:
+                gross = 1.0
+                profits.append(gross * (1.0 - commission_rate))
+            elif outcome > 0:
+                profits.append(-(float(odds) - 1.0))
+            else:
+                profits.append(0.0)
+        else:
+            if outcome > 0:
+                gross = float(odds) - 1.0
+                profits.append(gross * (1.0 - commission_rate))
+            elif outcome < 0:
+                profits.append(-1.0)
+            else:
+                profits.append(0.0)
+    return float(np.mean(profits)), avg_outcome
+
+
+def _extract_hdp_pred_pair(hdp_preds: object, line: object) -> tuple[float, float]:
+    try:
+        payload = hdp_preds if isinstance(hdp_preds, dict) else json.loads(str(hdp_preds or "{}"))
+    except Exception:
+        return np.nan, np.nan
+    if not isinstance(payload, dict) or not payload:
+        return np.nan, np.nan
+
+    target = pd.to_numeric(line, errors="coerce")
+    if pd.isna(target):
+        return np.nan, np.nan
+    target_value = float(target)
+
+    best_values: dict[str, object] | None = None
+    best_delta = float("inf")
+    for key, values in payload.items():
+        if not isinstance(values, dict):
+            continue
+        bounds = _parse_hdp_line_label(key)
+        if bounds is None:
+            continue
+        midpoint = round((bounds[0] + bounds[1]) / 2.0, 3)
+        delta = abs(midpoint - target_value)
+        if delta < best_delta:
+            best_delta = delta
+            best_values = values
+
+    if best_values is None or best_delta > 0.02:
+        return np.nan, np.nan
+
+    home_pred = pd.to_numeric(best_values.get("hdp_home_pred"), errors="coerce")
+    away_pred = pd.to_numeric(best_values.get("hdp_away_pred"), errors="coerce")
+    return float(home_pred) if pd.notna(home_pred) else np.nan, float(away_pred) if pd.notna(away_pred) else np.nan
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_hdp_simulation_frame() -> pd.DataFrame:
+    query = """
+        WITH h_latest AS (
+            SELECT
+                h.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY h.market_id, h.hdp_line
+                    ORDER BY h.updated_at DESC, h.id DESC
+                ) AS row_rank
+            FROM WS_odds_hdp h
+            WHERE COALESCE(h.inplay, 0) = 0
+        ),
+        links AS (
+            SELECT
+                hdp_market_id,
+                link_market_id,
+                link_match_id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY hdp_market_id
+                    ORDER BY id_betfair DESC
+                ) AS link_rank
+            FROM (
+                SELECT
+                    bl.ID_BETFAIR AS id_betfair,
+                    bl.ID_MARKET AS link_market_id,
+                    bl.MatchId AS link_match_id,
+                    jt.hdp_market_id
+                FROM Betfair_links_p bl
+                JOIN JSON_TABLE(
+                    bl.all_markets,
+                    '$[*]' COLUMNS (hdp_market_id VARCHAR(20) PATH '$.marketId')
+                ) jt
+            ) expanded
+        ),
+        aof_ranked AS (
+            SELECT
+                CAST(a.MatchId AS CHAR) AS match_key,
+                a.MatchId,
+                a.ID_MATCH,
+                a.LeagueName,
+                a.`date` AS match_date,
+                a.HomeTeam_clean,
+                a.AwayTeam_clean,
+                a.hdp_preds,
+                ROW_NUMBER() OVER (
+                    PARTITION BY a.MatchId
+                    ORDER BY COALESCE(a.maj, a.`date`) DESC, a.`date` DESC
+                ) AS row_rank
+            FROM AsianOdds_feeds a
+        ),
+        score_ranked AS (
+            SELECT
+                op.ID_MATCH,
+                op.result,
+                op.updated_at AS score_updated_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY op.ID_MATCH
+                    ORDER BY op.updated_at DESC
+                ) AS row_rank
+            FROM Oddsportal_data op
+            WHERE op.result REGEXP '^[0-9]+:[0-9]+$'
+        )
+        SELECT
+            h.market_id,
+            l.link_market_id,
+            l.link_match_id,
+            h.hdp_line,
+            h.home_name,
+            h.away_name,
+            h.updated_at,
+            h.status,
+            h.n_updates,
+            h.home_back,
+            h.home_back_1,
+            h.home_back_2,
+            h.home_lay,
+            h.home_lay_1,
+            h.home_lay_2,
+            h.away_back,
+            h.away_back_1,
+            h.away_back_2,
+            h.away_lay,
+            h.away_lay_1,
+            h.away_lay_2,
+            a.MatchId AS aof_match_id,
+            a.ID_MATCH,
+            a.LeagueName,
+            a.match_date,
+            a.HomeTeam_clean,
+            a.AwayTeam_clean,
+            a.hdp_preds,
+            s.result,
+            s.score_updated_at
+        FROM h_latest h
+        LEFT JOIN links l
+            ON l.hdp_market_id = h.market_id
+           AND l.link_rank = 1
+        LEFT JOIN aof_ranked a
+            ON a.match_key = CAST(l.link_match_id AS CHAR)
+           AND a.row_rank = 1
+        LEFT JOIN score_ranked s
+            ON s.ID_MATCH = a.ID_MATCH
+           AND s.row_rank = 1
+        WHERE h.row_rank = 1
+    """
+    df = _query_dataframe(query)
+    if df.empty:
+        return df
+
+    df["updated_at"] = pd.to_datetime(df["updated_at"], errors="coerce")
+    df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
+    df["score_updated_at"] = pd.to_datetime(df["score_updated_at"], errors="coerce")
+
+    numeric_columns = [
+        "hdp_line",
+        "n_updates",
+        "home_back",
+        "home_back_1",
+        "home_back_2",
+        "home_lay",
+        "home_lay_1",
+        "home_lay_2",
+        "away_back",
+        "away_back_1",
+        "away_back_2",
+        "away_lay",
+        "away_lay_1",
+        "away_lay_2",
+    ]
+    for column in numeric_columns:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    df["home_best_back"] = df[["home_back", "home_back_1", "home_back_2"]].max(axis=1)
+    df["away_best_back"] = df[["away_back", "away_back_1", "away_back_2"]].max(axis=1)
+    df["home_best_lay"] = df[["home_lay", "home_lay_1", "home_lay_2"]].replace(0, np.nan).min(axis=1)
+    df["away_best_lay"] = df[["away_lay", "away_lay_1", "away_lay_2"]].replace(0, np.nan).min(axis=1)
+
+    preds = df.apply(
+        lambda row: _extract_hdp_pred_pair(row.get("hdp_preds"), row.get("hdp_line")),
+        axis=1,
+        result_type="expand",
+    )
+    preds.columns = ["home_pred_odds", "away_pred_odds"]
+    df = pd.concat([df, preds], axis=1)
+
+    df["ev_home_back_pct"] = (
+        df["home_best_back"] / df["home_pred_odds"] - 1.0
+    ) * 100.0
+    df["ev_away_back_pct"] = (
+        df["away_best_back"] / df["away_pred_odds"] - 1.0
+    ) * 100.0
+    df["ev_home_lay_pct"] = (
+        df["home_pred_odds"] / df["home_best_lay"] - 1.0
+    ) * 100.0
+    df["ev_away_lay_pct"] = (
+        df["away_pred_odds"] / df["away_best_lay"] - 1.0
+    ) * 100.0
+
+    scores = df["result"].apply(_parse_score)
+    df["home_goals"] = scores.map(lambda value: value[0] if value is not None else np.nan)
+    df["away_goals"] = scores.map(lambda value: value[1] if value is not None else np.nan)
+    df["goal_diff"] = df["home_goals"] - df["away_goals"]
+
+    def _profit_row(row: pd.Series, side: str, position: str) -> tuple[float, float]:
+        goal_diff = pd.to_numeric(row.get("goal_diff"), errors="coerce")
+        line = pd.to_numeric(row.get("hdp_line"), errors="coerce")
+        if position == "lay":
+            odds_key = "home_best_lay" if side == "home" else "away_best_lay"
+        else:
+            odds_key = "home_best_back" if side == "home" else "away_best_back"
+        odds = pd.to_numeric(row.get(odds_key), errors="coerce")
+        if pd.isna(goal_diff) or pd.isna(line) or pd.isna(odds) or float(odds) <= 1.0:
+            return np.nan, np.nan
+        return _asian_profit_per_unit(
+            float(goal_diff),
+            float(line),
+            side,
+            float(odds),
+            position=position,
+        )
+
+    home_back_out = df.apply(
+        lambda row: _profit_row(row, "home", "back"), axis=1, result_type="expand"
+    )
+    away_back_out = df.apply(
+        lambda row: _profit_row(row, "away", "back"), axis=1, result_type="expand"
+    )
+    home_lay_out = df.apply(
+        lambda row: _profit_row(row, "home", "lay"), axis=1, result_type="expand"
+    )
+    away_lay_out = df.apply(
+        lambda row: _profit_row(row, "away", "lay"), axis=1, result_type="expand"
+    )
+
+    home_back_out.columns = ["home_back_profit_u", "home_back_outcome_u"]
+    away_back_out.columns = ["away_back_profit_u", "away_back_outcome_u"]
+    home_lay_out.columns = ["home_lay_profit_u", "home_lay_outcome_u"]
+    away_lay_out.columns = ["away_lay_profit_u", "away_lay_outcome_u"]
+    df = pd.concat([df, home_back_out, away_back_out, home_lay_out, away_lay_out], axis=1)
+
+    # Backward-compatible aliases kept for existing dashboards.
+    df["home_profit_u"] = df["home_back_profit_u"]
+    df["home_outcome_u"] = df["home_back_outcome_u"]
+    df["away_profit_u"] = df["away_back_profit_u"]
+    df["away_outcome_u"] = df["away_back_outcome_u"]
 
     return df.reset_index(drop=True)

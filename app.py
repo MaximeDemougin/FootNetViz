@@ -3,6 +3,7 @@ import streamlit as st
 
 from betting_data import get_db_status, get_user_catalog
 from dashboard_view import render_dashboard
+from hdp_analysis_view import render_hdp_analysis
 from upcoming_matches_view import render_upcoming_matches
 from ui import apply_theme
 
@@ -24,7 +25,7 @@ with st.sidebar:
 
     selected_page = st.radio(
         "Page",
-        ["Dashboard", "Matchs a venir"],
+        ["Dashboard", "Matchs a venir", "Analyse HDP"],
         key="selected_page",
     )
 
@@ -57,5 +58,7 @@ with st.sidebar:
 
 if st.session_state.get("selected_page") == "Matchs a venir":
     render_upcoming_matches()
+elif st.session_state.get("selected_page") == "Analyse HDP":
+    render_hdp_analysis()
 else:
     render_dashboard()

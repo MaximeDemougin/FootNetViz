@@ -204,7 +204,14 @@ def _aggregate_duplicate_bets(bets: pd.DataFrame) -> pd.DataFrame:
 
     group_keys = [
         key
-        for key in ("ID_USER", "MatchId", "ID_MARKET", "bet", "bet_libelle", "side_back_lay")
+        for key in (
+            "ID_USER",
+            "MatchId",
+            "ID_MARKET",
+            "bet",
+            "bet_libelle",
+            "side_back_lay",
+        )
         if key in bets.columns
     ]
     if not group_keys or not bets.duplicated(subset=group_keys, keep=False).any():
@@ -229,7 +236,9 @@ def _aggregate_duplicate_bets(bets: pd.DataFrame) -> pd.DataFrame:
 
     sum_cols = {"stake", "liability", "potential_profit", "matched_stake"}
     min_cols = {
-        col for col in ("created_at", "placedDate", "marketStartDate") if col in df.columns
+        col
+        for col in ("created_at", "placedDate", "marketStartDate")
+        if col in df.columns
     }
     max_cols = {col for col in ("matchedDate", "settledDate") if col in df.columns}
 
@@ -255,9 +264,7 @@ def _aggregate_duplicate_bets(bets: pd.DataFrame) -> pd.DataFrame:
     for col in weighted_cols:
         agg[f"_wnum_{col}"] = "sum"
 
-    grouped = (
-        df.groupby(group_keys, dropna=False, sort=False).agg(agg).reset_index()
-    )
+    grouped = df.groupby(group_keys, dropna=False, sort=False).agg(agg).reset_index()
 
     total_stake = grouped["_stake_w"]
     stake_mask = total_stake > 0
@@ -1502,7 +1509,10 @@ def _asian_profit_per_unit(
     commission_rate: float = EXCHANGE_COMMISSION_RATE,
 ) -> tuple[float, float]:
     h1, h2 = _split_handicap_line(line)
-    outcomes = [_asian_leg_outcome(goal_diff, h1, side), _asian_leg_outcome(goal_diff, h2, side)]
+    outcomes = [
+        _asian_leg_outcome(goal_diff, h1, side),
+        _asian_leg_outcome(goal_diff, h2, side),
+    ]
     avg_outcome = float(np.mean(outcomes))
 
     profits = []
@@ -1528,7 +1538,11 @@ def _asian_profit_per_unit(
 
 def _extract_hdp_pred_pair(hdp_preds: object, line: object) -> tuple[float, float]:
     try:
-        payload = hdp_preds if isinstance(hdp_preds, dict) else json.loads(str(hdp_preds or "{}"))
+        payload = (
+            hdp_preds
+            if isinstance(hdp_preds, dict)
+            else json.loads(str(hdp_preds or "{}"))
+        )
     except Exception:
         return np.nan, np.nan
     if not isinstance(payload, dict) or not payload:
@@ -1558,7 +1572,9 @@ def _extract_hdp_pred_pair(hdp_preds: object, line: object) -> tuple[float, floa
 
     home_pred = pd.to_numeric(best_values.get("hdp_home_pred"), errors="coerce")
     away_pred = pd.to_numeric(best_values.get("hdp_away_pred"), errors="coerce")
-    return float(home_pred) if pd.notna(home_pred) else np.nan, float(away_pred) if pd.notna(away_pred) else np.nan
+    return float(home_pred) if pd.notna(home_pred) else np.nan, float(
+        away_pred
+    ) if pd.notna(away_pred) else np.nan
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -1696,8 +1712,12 @@ def load_hdp_simulation_frame() -> pd.DataFrame:
 
     df["home_best_back"] = df[["home_back", "home_back_1", "home_back_2"]].max(axis=1)
     df["away_best_back"] = df[["away_back", "away_back_1", "away_back_2"]].max(axis=1)
-    df["home_best_lay"] = df[["home_lay", "home_lay_1", "home_lay_2"]].replace(0, np.nan).min(axis=1)
-    df["away_best_lay"] = df[["away_lay", "away_lay_1", "away_lay_2"]].replace(0, np.nan).min(axis=1)
+    df["home_best_lay"] = (
+        df[["home_lay", "home_lay_1", "home_lay_2"]].replace(0, np.nan).min(axis=1)
+    )
+    df["away_best_lay"] = (
+        df[["away_lay", "away_lay_1", "away_lay_2"]].replace(0, np.nan).min(axis=1)
+    )
 
     preds = df.apply(
         lambda row: _extract_hdp_pred_pair(row.get("hdp_preds"), row.get("hdp_line")),
@@ -1707,22 +1727,18 @@ def load_hdp_simulation_frame() -> pd.DataFrame:
     preds.columns = ["home_pred_odds", "away_pred_odds"]
     df = pd.concat([df, preds], axis=1)
 
-    df["ev_home_back_pct"] = (
-        df["home_best_back"] / df["home_pred_odds"] - 1.0
-    ) * 100.0
-    df["ev_away_back_pct"] = (
-        df["away_best_back"] / df["away_pred_odds"] - 1.0
-    ) * 100.0
-    df["ev_home_lay_pct"] = (
-        df["home_pred_odds"] / df["home_best_lay"] - 1.0
-    ) * 100.0
-    df["ev_away_lay_pct"] = (
-        df["away_pred_odds"] / df["away_best_lay"] - 1.0
-    ) * 100.0
+    df["ev_home_back_pct"] = (df["home_best_back"] / df["home_pred_odds"] - 1.0) * 100.0
+    df["ev_away_back_pct"] = (df["away_best_back"] / df["away_pred_odds"] - 1.0) * 100.0
+    df["ev_home_lay_pct"] = (df["home_pred_odds"] / df["home_best_lay"] - 1.0) * 100.0
+    df["ev_away_lay_pct"] = (df["away_pred_odds"] / df["away_best_lay"] - 1.0) * 100.0
 
     scores = df["result"].apply(_parse_score)
-    df["home_goals"] = scores.map(lambda value: value[0] if value is not None else np.nan)
-    df["away_goals"] = scores.map(lambda value: value[1] if value is not None else np.nan)
+    df["home_goals"] = scores.map(
+        lambda value: value[0] if value is not None else np.nan
+    )
+    df["away_goals"] = scores.map(
+        lambda value: value[1] if value is not None else np.nan
+    )
     df["goal_diff"] = df["home_goals"] - df["away_goals"]
 
     def _profit_row(row: pd.Series, side: str, position: str) -> tuple[float, float]:
@@ -1760,7 +1776,9 @@ def load_hdp_simulation_frame() -> pd.DataFrame:
     away_back_out.columns = ["away_back_profit_u", "away_back_outcome_u"]
     home_lay_out.columns = ["home_lay_profit_u", "home_lay_outcome_u"]
     away_lay_out.columns = ["away_lay_profit_u", "away_lay_outcome_u"]
-    df = pd.concat([df, home_back_out, away_back_out, home_lay_out, away_lay_out], axis=1)
+    df = pd.concat(
+        [df, home_back_out, away_back_out, home_lay_out, away_lay_out], axis=1
+    )
 
     # Backward-compatible aliases kept for existing dashboards.
     df["home_profit_u"] = df["home_back_profit_u"]

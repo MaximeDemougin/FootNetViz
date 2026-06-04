@@ -33,6 +33,14 @@ def _hdp_line_sign(value: float) -> str:
     return "Zero"
 
 
+def _effective_lay_odds(lay_odds: pd.Series) -> pd.Series:
+    lay = pd.to_numeric(lay_odds, errors="coerce")
+    valid = lay > 1.0
+    effective = pd.Series(np.nan, index=lay.index, dtype=float)
+    effective.loc[valid] = 1.0 + (0.97 / (lay.loc[valid] - 1.0))
+    return effective
+
+
 def _build_long_frame(df: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict] = []
     for record in df.to_dict("records"):
@@ -56,12 +64,14 @@ def _build_long_frame(df: pd.DataFrame) -> pd.DataFrame:
                 "back_odds": record.get("home_best_back"),
                 "lay_odds": record.get("home_best_lay"),
                 "pred_odds": record.get("home_pred_odds"),
+                "opp_pred_odds": record.get("away_pred_odds"),
                 "ev_back_pct": record.get("ev_home_back_pct"),
                 "ev_lay_pct": record.get("ev_home_lay_pct"),
                 "profit_back_u": record.get("home_back_profit_u"),
                 "profit_lay_u": record.get("home_lay_profit_u"),
                 "outcome_back_u": record.get("home_back_outcome_u"),
                 "outcome_lay_u": record.get("home_lay_outcome_u"),
+                "opp_back_outcome_u": record.get("away_back_outcome_u"),
             }
         )
         rows.append(
@@ -71,12 +81,14 @@ def _build_long_frame(df: pd.DataFrame) -> pd.DataFrame:
                 "back_odds": record.get("away_best_back"),
                 "lay_odds": record.get("away_best_lay"),
                 "pred_odds": record.get("away_pred_odds"),
+                "opp_pred_odds": record.get("home_pred_odds"),
                 "ev_back_pct": record.get("ev_away_back_pct"),
                 "ev_lay_pct": record.get("ev_away_lay_pct"),
                 "profit_back_u": record.get("away_back_profit_u"),
                 "profit_lay_u": record.get("away_lay_profit_u"),
                 "outcome_back_u": record.get("away_back_outcome_u"),
                 "outcome_lay_u": record.get("away_lay_outcome_u"),
+                "opp_back_outcome_u": record.get("home_back_outcome_u"),
             }
         )
 
@@ -88,12 +100,14 @@ def _build_long_frame(df: pd.DataFrame) -> pd.DataFrame:
         "back_odds",
         "lay_odds",
         "pred_odds",
+        "opp_pred_odds",
         "ev_back_pct",
         "ev_lay_pct",
         "profit_back_u",
         "profit_lay_u",
         "outcome_back_u",
         "outcome_lay_u",
+        "opp_back_outcome_u",
         "hdp_line",
     ]:
         long_df[column] = pd.to_numeric(long_df[column], errors="coerce")
@@ -112,28 +126,56 @@ def _build_long_frame(df: pd.DataFrame) -> pd.DataFrame:
     long_df["line_type"] = long_df["hdp_line"].apply(_hdp_line_type)
     long_df["line_sign"] = long_df["hdp_line"].apply(_hdp_line_sign)
     long_df["line_type_sign"] = long_df["line_sign"] + " | " + long_df["line_type"]
-    long_df["has_score"] = long_df["profit_back_u"].notna() | long_df["profit_lay_u"].notna()
+    long_df["has_score"] = (
+        long_df["profit_back_u"].notna() | long_df["profit_lay_u"].notna()
+    )
     return long_df
 
 
 def _simulate(df: pd.DataFrame, position: str) -> pd.DataFrame:
     simulation = df.copy()
     if position == "lay":
-        simulation["used_odds"] = pd.to_numeric(simulation["lay_odds"], errors="coerce")
-        simulation["ev_pct"] = pd.to_numeric(simulation["ev_lay_pct"], errors="coerce")
-        simulation["profit_u"] = pd.to_numeric(simulation["profit_lay_u"], errors="coerce")
-        simulation["outcome_u"] = pd.to_numeric(simulation["outcome_lay_u"], errors="coerce")
+        simulation["used_odds"] = _effective_lay_odds(simulation["lay_odds"])
+        simulation["fair_used_odds"] = pd.to_numeric(
+            simulation["opp_pred_odds"], errors="coerce"
+        )
+        simulation["ev_pct"] = (
+            simulation["used_odds"] / simulation["fair_used_odds"] - 1.0
+        ) * 100.0
+        simulation["outcome_u"] = pd.to_numeric(
+            simulation["opp_back_outcome_u"], errors="coerce"
+        )
+        simulation["profit_u"] = np.where(
+            simulation["outcome_u"] > 0,
+            simulation["outcome_u"] * (simulation["used_odds"] - 1.0),
+            simulation["outcome_u"],
+        )
     else:
-        simulation["used_odds"] = pd.to_numeric(simulation["back_odds"], errors="coerce")
+        simulation["used_odds"] = pd.to_numeric(
+            simulation["back_odds"], errors="coerce"
+        )
+        simulation["fair_used_odds"] = pd.to_numeric(
+            simulation["pred_odds"], errors="coerce"
+        )
         simulation["ev_pct"] = pd.to_numeric(simulation["ev_back_pct"], errors="coerce")
-        simulation["profit_u"] = pd.to_numeric(simulation["profit_back_u"], errors="coerce")
-        simulation["outcome_u"] = pd.to_numeric(simulation["outcome_back_u"], errors="coerce")
+        simulation["profit_u"] = pd.to_numeric(
+            simulation["profit_back_u"], errors="coerce"
+        )
+        simulation["outcome_u"] = pd.to_numeric(
+            simulation["outcome_back_u"], errors="coerce"
+        )
 
-    simulation = simulation.dropna(subset=["used_odds", "pred_odds", "ev_pct", "profit_u"]).copy()
+    simulation = simulation.dropna(
+        subset=["used_odds", "fair_used_odds", "ev_pct", "profit_u"]
+    ).copy()
     simulation = simulation.loc[simulation["used_odds"] > 1.0]
-    simulation = simulation.sort_values(["match_date", "updated_at"], na_position="last")
+    simulation = simulation.sort_values(
+        ["match_date", "updated_at"], na_position="last"
+    )
     simulation["stake_u"] = 1.0
-    simulation["expected_profit_u"] = simulation["stake_u"] * simulation["ev_pct"] / 100.0
+    simulation["expected_profit_u"] = (
+        simulation["stake_u"] * simulation["ev_pct"] / 100.0
+    )
     simulation["cum_profit_u"] = simulation["profit_u"].cumsum()
     simulation["cum_expected_u"] = simulation["expected_profit_u"].cumsum()
     return simulation
@@ -168,7 +210,9 @@ def render_hdp_analysis() -> None:
     coverage_cols = st.columns(4)
     coverage_cols[0].metric("Lignes HDP", f"{int(raw.shape[0])}")
     coverage_cols[1].metric("Avec score", f"{int(long_df['has_score'].sum() / 2)}")
-    coverage_cols[2].metric("Matchs distincts", f"{int(long_df['link_match_id'].nunique())}")
+    coverage_cols[2].metric(
+        "Matchs distincts", f"{int(long_df['link_match_id'].nunique())}"
+    )
     coverage_cols[3].metric("Ligues", f"{int(long_df['league'].nunique())}")
 
     st.caption(
@@ -191,7 +235,9 @@ def render_hdp_analysis() -> None:
             ["Type de ligne", "Signe de ligne", "Type + signe"],
             index=0,
         )
-        ev_min = st.slider("EV min (%)", min_value=-10.0, max_value=25.0, value=2.0, step=0.5)
+        ev_min = st.slider(
+            "EV min (%)", min_value=-10.0, max_value=25.0, value=2.0, step=0.5
+        )
         odds_range = st.slider(
             "Odds utilisees",
             min_value=1.01,
@@ -200,8 +246,12 @@ def render_hdp_analysis() -> None:
             step=0.01,
         )
         selected_leagues = st.multiselect("Ligues", leagues, default=leagues)
-        selected_line_types = st.multiselect("Type de ligne HDP", line_types, default=line_types)
-        selected_line_signs = st.multiselect("Signe ligne HDP", line_signs, default=line_signs)
+        selected_line_types = st.multiselect(
+            "Type de ligne HDP", line_types, default=line_types
+        )
+        selected_line_signs = st.multiselect(
+            "Signe ligne HDP", line_signs, default=line_signs
+        )
         if pd.notna(min_date) and pd.notna(max_date):
             date_range = st.date_input(
                 "Periode",
@@ -218,16 +268,6 @@ def render_hdp_analysis() -> None:
     filtered = filtered.loc[filtered["line_sign"].isin(selected_line_signs)]
     if side_choice != "Les deux":
         filtered = filtered.loc[filtered["side"] == side_choice.lower()]
-    if position_choice == "Lay":
-        filtered = filtered.loc[filtered["ev_lay_pct"] >= ev_min]
-        filtered = filtered.loc[
-            filtered["lay_odds"].between(float(odds_range[0]), float(odds_range[1]))
-        ]
-    else:
-        filtered = filtered.loc[filtered["ev_back_pct"] >= ev_min]
-        filtered = filtered.loc[
-            filtered["back_odds"].between(float(odds_range[0]), float(odds_range[1]))
-        ]
     if isinstance(date_range, tuple) and len(date_range) == 2:
         start_date, end_date = date_range
         filtered = filtered.loc[
@@ -235,12 +275,16 @@ def render_hdp_analysis() -> None:
         ]
 
     simulation = _simulate(filtered, position_choice.lower())
+    simulation = simulation.loc[simulation["ev_pct"] >= ev_min]
+    simulation = simulation.loc[
+        simulation["used_odds"].between(float(odds_range[0]), float(odds_range[1]))
+    ]
     if simulation.empty:
         st.warning("Aucun scenario ne correspond aux filtres de simulation.")
         return
 
     st.caption(
-        "Commission exchange appliquee: 3% uniquement sur la partie gagnante (back et lay)."
+        "Mode Lay: cote utilisee = 1 + 0.97 / (cote_lay - 1), puis pari sur le cote oppose."
     )
 
     bet_count = int(simulation.shape[0])
@@ -316,7 +360,9 @@ def render_hdp_analysis() -> None:
         barmode="group",
         title=f"Performance par {group_choice.lower()}",
     )
-    fig_group.update_layout(height=340, margin=dict(l=20, r=20, t=50, b=20), legend_title_text="Mesure")
+    fig_group.update_layout(
+        height=340, margin=dict(l=20, r=20, t=50, b=20), legend_title_text="Mesure"
+    )
     st.plotly_chart(fig_group, use_container_width=True)
 
     grouped_display = grouped.rename(
@@ -345,7 +391,7 @@ def render_hdp_analysis() -> None:
             "used_odds",
             "back_odds",
             "lay_odds",
-            "pred_odds",
+            "fair_used_odds",
             "ev_pct",
             "expected_profit_u",
             "result",
@@ -367,7 +413,7 @@ def render_hdp_analysis() -> None:
             "used_odds": "Cote utilisee",
             "back_odds": "Back",
             "lay_odds": "Lay",
-            "pred_odds": "Fair",
+            "fair_used_odds": "Fair utilisee",
             "ev_pct": "EV %",
             "expected_profit_u": "EV (u)",
             "result": "Score",
@@ -377,4 +423,6 @@ def render_hdp_analysis() -> None:
             "link_market_id": "1X2 market",
         }
     )
-    st.dataframe(display.sort_values("Date match", ascending=False), use_container_width=True)
+    st.dataframe(
+        display.sort_values("Date match", ascending=False), use_container_width=True
+    )

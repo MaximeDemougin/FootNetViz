@@ -45,7 +45,7 @@ def render_dashboard() -> None:
         dashboard_bets["ROI attendu %"].replace([np.inf, -np.inf], pd.NA).dropna()
     )
     roi_min = float(roi_expected.min()) if not roi_expected.empty else -10.0
-    roi_max = float(roi_expected.quantile(0.98)) if not roi_expected.empty else 50.0
+    roi_max = float(roi_expected.max()) if not roi_expected.empty else 50.0
 
     st.title("Resultats FootNet")
     st.caption(f"Historique utilisateur - {bets.iloc[0]['username']}")
@@ -107,16 +107,18 @@ def render_dashboard() -> None:
         settled=filtered["Résultat"].ne("Open"),
         profit=filtered["Gains net"],
         stake=filtered["Mise"],
+        expected_profit=filtered["Marge attendue"],
         day_label=filtered["Date"].dt.date,
         ID_BET=filtered["ID_BET"],
         match_type=filtered["Ligue"],
     )
     kpis = compute_dashboard_kpis(metric_source)
-    metric_columns = st.columns(4)
+    metric_columns = st.columns(5)
     metric_columns[0].metric("PnL realise", f"{kpis['total_profit']:+.2f}")
     metric_columns[1].metric("ROI realise", f"{kpis['roi_pct']:+.1f}%")
     metric_columns[2].metric("Bets settles", str(kpis["settled_bets"]))
-    metric_columns[3].metric("Win rate", f"{kpis['win_rate']:.1f}%")
+    metric_columns[3].metric("EV total", f"{kpis['expected_profit_total']:+.2f}")
+    metric_columns[4].metric("EV %", f"{kpis['expected_roi_pct']:+.1f}%")
 
     chart_bets = filtered.sort_values("Date").copy()
     chart_bets["Cumulative Gains"] = chart_bets["Gains net"].cumsum()

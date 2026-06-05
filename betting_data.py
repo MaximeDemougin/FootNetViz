@@ -552,15 +552,26 @@ def compute_dashboard_kpis(bets: pd.DataFrame) -> dict[str, float]:
             "total_stake": 0.0,
             "total_profit": 0.0,
             "roi_pct": 0.0,
+            "expected_profit_total": 0.0,
+            "expected_roi_pct": 0.0,
             "open_exposure": 0.0,
             "win_rate": 0.0,
         }
     settled = bets.loc[bets["settled"]].copy()
     open_bets = bets.loc[~bets["settled"]].copy()
+    expected_profit_series = pd.to_numeric(
+        bets.get("expected_profit", 0.0), errors="coerce"
+    ).fillna(0.0)
+    stake_all_series = pd.to_numeric(bets.get("stake", 0.0), errors="coerce").fillna(0.0)
     total_stake = float(settled["stake"].sum())
     total_profit = float(settled["profit"].sum())
+    expected_profit_total = float(expected_profit_series.sum())
+    total_stake_all = float(stake_all_series.sum())
     wins = float((settled["profit"] > 0).sum())
     settled_count = int(len(settled))
+    exposure_source = (
+        open_bets["exposure"] if "exposure" in open_bets.columns else open_bets["stake"]
+    )
     return {
         "total_bets": int(len(bets)),
         "settled_bets": settled_count,
@@ -568,7 +579,13 @@ def compute_dashboard_kpis(bets: pd.DataFrame) -> dict[str, float]:
         "total_stake": total_stake,
         "total_profit": total_profit,
         "roi_pct": (total_profit / total_stake * 100) if total_stake else 0.0,
-        "open_exposure": float(open_bets["exposure"].sum()),
+        "expected_profit_total": expected_profit_total,
+        "expected_roi_pct": (
+            expected_profit_total / total_stake_all * 100
+        )
+        if total_stake_all
+        else 0.0,
+        "open_exposure": float(exposure_source.sum()),
         "win_rate": (wins / settled_count * 100) if settled_count else 0.0,
     }
 

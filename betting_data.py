@@ -562,7 +562,9 @@ def compute_dashboard_kpis(bets: pd.DataFrame) -> dict[str, float]:
     expected_profit_series = pd.to_numeric(
         bets.get("expected_profit", 0.0), errors="coerce"
     ).fillna(0.0)
-    stake_all_series = pd.to_numeric(bets.get("stake", 0.0), errors="coerce").fillna(0.0)
+    stake_all_series = pd.to_numeric(bets.get("stake", 0.0), errors="coerce").fillna(
+        0.0
+    )
     total_stake = float(settled["stake"].sum())
     total_profit = float(settled["profit"].sum())
     expected_profit_total = float(expected_profit_series.sum())
@@ -580,9 +582,7 @@ def compute_dashboard_kpis(bets: pd.DataFrame) -> dict[str, float]:
         "total_profit": total_profit,
         "roi_pct": (total_profit / total_stake * 100) if total_stake else 0.0,
         "expected_profit_total": expected_profit_total,
-        "expected_roi_pct": (
-            expected_profit_total / total_stake_all * 100
-        )
+        "expected_roi_pct": (expected_profit_total / total_stake_all * 100)
         if total_stake_all
         else 0.0,
         "open_exposure": float(exposure_source.sum()),

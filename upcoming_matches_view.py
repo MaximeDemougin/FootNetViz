@@ -10,7 +10,13 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from betting_data import get_db_status, load_upcoming_ws_odds, load_ws_odds_hdp
+from betting_data import (
+    get_db_status,
+    load_upcoming_ws_odds,
+    load_user_excluded_leagues,
+    load_ws_odds_hdp,
+    save_user_excluded_leagues,
+)
 
 
 EXCLUDED_LEAGUES_FILE = (
@@ -947,8 +953,36 @@ def render_upcoming_matches() -> None:
         st.info("Aucun match futur disponible dans les predictions.")
         return
 
+    current_user_id = st.session_state.get("selected_user_id")
+
+    if "upcoming_excluded_user_id" not in st.session_state:
+        st.session_state.upcoming_excluded_user_id = None
+
+    user_changed = st.session_state.upcoming_excluded_user_id != current_user_id
+    if user_changed:
+        from_db = load_user_excluded_leagues(
+            int(current_user_id) if current_user_id is not None else None
+        )
+        st.session_state.upcoming_excluded_leagues = (
+            from_db if from_db else _load_excluded_leagues()
+        )
+        st.session_state.upcoming_excluded_leagues_widget = list(
+            st.session_state.upcoming_excluded_leagues
+        )
+        st.session_state.upcoming_excluded_user_id = current_user_id
+
     if "upcoming_excluded_leagues" not in st.session_state:
-        st.session_state.upcoming_excluded_leagues = _load_excluded_leagues()
+        from_db = load_user_excluded_leagues(
+            int(current_user_id) if current_user_id is not None else None
+        )
+        st.session_state.upcoming_excluded_leagues = (
+            from_db if from_db else _load_excluded_leagues()
+        )
+
+    if "upcoming_excluded_leagues_widget" not in st.session_state:
+        st.session_state.upcoming_excluded_leagues_widget = list(
+            st.session_state.upcoming_excluded_leagues
+        )
 
     all_league_options = _sort_options(
         prepared["League"].dropna().astype(str).unique().tolist()
@@ -965,14 +999,14 @@ def render_upcoming_matches() -> None:
         st.caption(
             "Selectionnez les ligues a masquer durablement. La liste est sauvegardee sur disque."
         )
-        new_excluded = st.multiselect(
+        st.multiselect(
             "Ne pas afficher",
             options=excluded_options,
-            default=excluded_leagues,
             placeholder="Aucune ligue exclue",
             key="upcoming_excluded_leagues_widget",
             label_visibility="collapsed",
         )
+        new_excluded = list(st.session_state.upcoming_excluded_leagues_widget)
         cols = st.columns((1, 1, 4))
         add_all = cols[0].button("Tout exclure", key="upcoming_excluded_add_all")
         clear_all = cols[1].button("Tout reinitialiser", key="upcoming_excluded_clear")
@@ -980,10 +1014,17 @@ def render_upcoming_matches() -> None:
             new_excluded = list(all_league_options)
         if clear_all:
             new_excluded = []
+        if add_all or clear_all:
+            st.session_state.upcoming_excluded_leagues_widget = list(new_excluded)
         if sorted(new_excluded, key=str.lower) != sorted(
             excluded_leagues, key=str.lower
         ):
-            _save_excluded_leagues(new_excluded)
+            saved = save_user_excluded_leagues(
+                int(current_user_id) if current_user_id is not None else None,
+                new_excluded,
+            )
+            if not saved:
+                _save_excluded_leagues(new_excluded)
             st.session_state.upcoming_excluded_leagues = sorted(
                 {str(item) for item in new_excluded}, key=str.lower
             )

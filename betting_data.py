@@ -60,6 +60,82 @@ def _query_dataframe(query: str, params: dict[str, Any] | None = None) -> pd.Dat
         return pd.read_sql_query(text(query), connection, params=params)
 
 
+def _execute_statement(statement: str, params: dict[str, Any] | None = None) -> None:
+    engine = _get_engine(_resolved_db_url())
+    with engine.begin() as connection:
+        connection.execute(text(statement), params or {})
+
+
+def _ensure_user_preferences_table() -> None:
+    _execute_statement(
+        """
+        CREATE TABLE IF NOT EXISTS FootNetViz_user_preferences (
+            ID_USER BIGINT PRIMARY KEY,
+            excluded_leagues JSON NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def load_user_excluded_leagues(user_id: int | None) -> list[str]:
+    if user_id is None:
+        return []
+    try:
+        _ensure_user_preferences_table()
+        df = _query_dataframe(
+            """
+            SELECT excluded_leagues
+            FROM FootNetViz_user_preferences
+            WHERE ID_USER = :user_id
+            """,
+            params={"user_id": int(user_id)},
+        )
+    except Exception:
+        return []
+
+    if df.empty:
+        return []
+    raw = df.loc[0, "excluded_leagues"]
+    try:
+        payload = raw if isinstance(raw, list) else json.loads(str(raw or "[]"))
+    except Exception:
+        payload = []
+    if not isinstance(payload, list):
+        return []
+    return sorted(
+        {str(item).strip() for item in payload if str(item).strip()}, key=str.lower
+    )
+
+
+def save_user_excluded_leagues(user_id: int | None, values: list[str]) -> bool:
+    if user_id is None:
+        return False
+    cleaned = sorted(
+        {str(item).strip() for item in values if str(item).strip()}, key=str.lower
+    )
+    try:
+        _ensure_user_preferences_table()
+        _execute_statement(
+            """
+            INSERT INTO FootNetViz_user_preferences (ID_USER, excluded_leagues)
+            VALUES (:user_id, CAST(:excluded_json AS JSON))
+            ON DUPLICATE KEY UPDATE
+                excluded_leagues = VALUES(excluded_leagues)
+            """,
+            params={
+                "user_id": int(user_id),
+                "excluded_json": json.dumps(cleaned, ensure_ascii=False),
+            },
+        )
+        load_user_excluded_leagues.clear()
+        return True
+    except Exception:
+        return False
+
+
 @st.cache_data(ttl=120, show_spinner=False)
 def get_db_status() -> dict[str, str]:
     config = get_db_config()

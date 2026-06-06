@@ -216,7 +216,7 @@ def render_hdp_analysis() -> None:
     coverage_cols[3].metric("Ligues", f"{int(long_df['league'].nunique())}")
 
     st.caption(
-        "Jointure utilisee: WS_odds_hdp.link_market_id/link_match_id (ou fallback Betfair_links_p) -> AsianOdds_feeds.MatchId -> Oddsportal_data.ID_MATCH (score)."
+        "Jointure utilisee: WS_odds_hdp.MatchId -> AsianOdds_feeds.MatchId -> Oddsportal_data.ID_MATCH (score), puis attribution des probabilites via hdp_line."
     )
 
     leagues = sorted(long_df["league"].dropna().unique().tolist())
@@ -290,25 +290,33 @@ def render_hdp_analysis() -> None:
     bet_count = int(simulation.shape[0])
     profit_total = float(simulation["profit_u"].sum())
     roi_pct = (profit_total / bet_count) * 100.0 if bet_count else 0.0
-    win_rate = float((simulation["outcome_u"] > 0).mean() * 100.0) if bet_count else 0.0
+    ev_total_u = float(simulation["expected_profit_u"].sum())
 
     kpi_cols = st.columns(5)
     kpi_cols[0].metric("Bets simules", str(bet_count))
     kpi_cols[1].metric("Profit (u)", f"{profit_total:+.2f}u")
     kpi_cols[2].metric("ROI / bet", f"{roi_pct:+.1f}%")
-    kpi_cols[3].metric("Win rate", f"{win_rate:.1f}%")
+    kpi_cols[3].metric("EV totale (u)", f"{ev_total_u:+.2f}u")
     kpi_cols[4].metric("EV moyen", f"{float(simulation['ev_pct'].mean()):+.1f}%")
+
+    axis_mode = st.selectbox(
+        "Abscisse courbe",
+        ["Index du bet", "Date"],
+        index=0,
+    )
 
     chart_df = simulation.copy()
     chart_df["point"] = chart_df["match_date"].fillna(chart_df["updated_at"])
     chart_df = chart_df.sort_values("point")
+    chart_df["bet_index"] = np.arange(1, len(chart_df) + 1)
     chart_df["cum_profit_u"] = chart_df["profit_u"].cumsum()
     chart_df["cum_expected_u"] = chart_df["expected_profit_u"].cumsum()
+    x_col = "bet_index" if axis_mode == "Index du bet" else "point"
 
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
-            x=chart_df["point"],
+            x=chart_df[x_col],
             y=chart_df["cum_profit_u"],
             mode="lines+markers",
             name="PnL cumule",
@@ -317,7 +325,7 @@ def render_hdp_analysis() -> None:
     )
     fig.add_trace(
         go.Scatter(
-            x=chart_df["point"],
+            x=chart_df[x_col],
             y=chart_df["cum_expected_u"],
             mode="lines",
             name="EV cumulee",
@@ -326,6 +334,10 @@ def render_hdp_analysis() -> None:
     )
     fig.update_layout(title="Courbe cumulee: PnL reel vs EV (1u par bet)")
     fig.update_layout(height=360, margin=dict(l=20, r=20, t=50, b=20))
+    if axis_mode == "Date":
+        fig.update_xaxes(type="date", tickformat="%d/%m %H:%M")
+    else:
+        fig.update_xaxes(title="Index du bet")
     st.plotly_chart(fig, use_container_width=True)
 
     group_col_map = {

@@ -1754,52 +1754,20 @@ def _extract_hdp_pred_pair(hdp_preds: object, line: object) -> tuple[float, floa
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_hdp_simulation_frame() -> pd.DataFrame:
-    direct_market_col, direct_match_col = _resolve_ws_hdp_link_columns()
-    use_legacy_links = not (direct_market_col and direct_match_col)
-    link_market_expr = (
-        f"h.`{direct_market_col}`" if direct_market_col else "l.link_market_id"
+    ws_columns = _get_table_column_map("WS_odds_hdp")
+    match_col = _first_existing_column(
+        ws_columns,
+        ["matchid", "match_id", "id_match", "link_match_id", "aof_match_id"],
     )
-    link_match_expr = (
-        f"h.`{direct_match_col}`" if direct_match_col else "l.link_match_id"
+    market_col = _first_existing_column(
+        ws_columns,
+        ["id_market", "link_market_id", "market_id_1x2", "one_x_two_market_id"],
     )
-    links_cte = (
-        """
-        ,
-        links AS (
-            SELECT
-                hdp_market_id,
-                link_market_id,
-                link_match_id,
-                ROW_NUMBER() OVER (
-                    PARTITION BY hdp_market_id
-                    ORDER BY id_betfair DESC
-                ) AS link_rank
-            FROM (
-                SELECT
-                    bl.ID_BETFAIR AS id_betfair,
-                    bl.ID_MARKET AS link_market_id,
-                    bl.MatchId AS link_match_id,
-                    jt.hdp_market_id
-                FROM Betfair_links_p bl
-                JOIN JSON_TABLE(
-                    bl.all_markets,
-                    '$[*]' COLUMNS (hdp_market_id VARCHAR(20) PATH '$.marketId')
-                ) jt
-            ) expanded
-        )
-    """
-        if use_legacy_links
-        else ""
-    )
-    links_join = (
-        """
-        LEFT JOIN links l
-            ON l.hdp_market_id = h.market_id
-           AND l.link_rank = 1
-    """
-        if use_legacy_links
-        else ""
-    )
+    if not match_col:
+        return pd.DataFrame()
+
+    link_market_expr = f"h.`{market_col}`" if market_col else "NULL"
+    link_match_expr = f"h.`{match_col}`"
     query = f"""
         WITH h_latest AS (
             SELECT
@@ -1811,7 +1779,6 @@ def load_hdp_simulation_frame() -> pd.DataFrame:
             FROM WS_odds_hdp h
             WHERE COALESCE(h.inplay, 0) = 0
         )
-        {links_cte}
         ,
         aof_ranked AS (
             SELECT
@@ -1873,7 +1840,6 @@ def load_hdp_simulation_frame() -> pd.DataFrame:
             s.result,
             s.score_updated_at
         FROM h_latest h
-        {links_join}
         LEFT JOIN aof_ranked a
             ON a.match_key = CAST({link_match_expr} AS CHAR)
            AND a.row_rank = 1

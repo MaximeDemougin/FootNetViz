@@ -216,7 +216,7 @@ def render_hdp_analysis() -> None:
     coverage_cols[3].metric("Ligues", f"{int(long_df['league'].nunique())}")
 
     st.caption(
-        "Jointure utilisee: WS_odds_hdp.market_id -> Betfair_links_p.all_markets -> AsianOdds_feeds.MatchId -> Oddsportal_data.ID_MATCH (score)."
+        "Jointure utilisee: WS_odds_hdp.link_market_id/link_match_id (ou fallback Betfair_links_p) -> AsianOdds_feeds.MatchId -> Oddsportal_data.ID_MATCH (score)."
     )
 
     leagues = sorted(long_df["league"].dropna().unique().tolist())

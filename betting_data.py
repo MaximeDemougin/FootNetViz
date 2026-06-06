@@ -60,6 +60,65 @@ def _query_dataframe(query: str, params: dict[str, Any] | None = None) -> pd.Dat
         return pd.read_sql_query(text(query), connection, params=params)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _get_table_column_map(table_name: str) -> dict[str, str]:
+    """Return {lower_name: actual_name} for a table in the active schema."""
+    try:
+        columns = _query_dataframe(
+            """
+            SELECT COLUMN_NAME
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = :table_name
+            """,
+            params={"table_name": table_name},
+        )
+    except Exception:
+        return {}
+    if columns.empty:
+        return {}
+    return {
+        str(value).strip().lower(): str(value).strip()
+        for value in columns["COLUMN_NAME"].dropna().tolist()
+        if str(value).strip()
+    }
+
+
+def _first_existing_column(
+    column_map: dict[str, str], candidates: list[str]
+) -> str | None:
+    for candidate in candidates:
+        actual = column_map.get(candidate.lower())
+        if actual:
+            return actual
+    return None
+
+
+def _resolve_ws_hdp_link_columns() -> tuple[str | None, str | None]:
+    """Resolve direct 1X2 market/match link columns from WS_odds_hdp when present."""
+    column_map = _get_table_column_map("WS_odds_hdp")
+    market_col = _first_existing_column(
+        column_map,
+        [
+            "link_market_id",
+            "id_market",
+            "market_id_1x2",
+            "one_x_two_market_id",
+        ],
+    )
+    match_col = _first_existing_column(
+        column_map,
+        [
+            "link_match_id",
+            "id_match",
+            "match_id",
+            "aof_match_id",
+            "asianodds_match_id",
+        ],
+    )
+    return market_col, match_col
+
+
 def _execute_statement(statement: str, params: dict[str, Any] | None = None) -> None:
     engine = _get_engine(_resolved_db_url())
     with engine.begin() as connection:
@@ -1450,16 +1509,16 @@ def load_ws_odds_hdp() -> pd.DataFrame:
     Resolves each handicap market_id to its sibling 1X2 ``ID_MARKET`` (the key
     used by the upcoming-matches view) through ``Betfair_links_p.all_markets``.
     """
-    query = """
-        WITH ranked AS (
-            SELECT
-                h.*,
-                ROW_NUMBER() OVER (
-                    PARTITION BY h.market_id, h.hdp_line
-                    ORDER BY h.updated_at DESC, h.id DESC
-                ) AS row_rank
-            FROM WS_odds_hdp h
-        ),
+    direct_market_col, direct_match_col = _resolve_ws_hdp_link_columns()
+    use_legacy_links = not (direct_market_col and direct_match_col)
+    link_market_expr = (
+        f"r.`{direct_market_col}`" if direct_market_col else "l.link_market_id"
+    )
+    link_match_expr = (
+        f"r.`{direct_match_col}`" if direct_match_col else "l.link_match_id"
+    )
+    links_cte = """
+        ,
         links AS (
             SELECT
                 hdp_market_id,
@@ -1482,10 +1541,27 @@ def load_ws_odds_hdp() -> pd.DataFrame:
                 ) jt
             ) expanded
         )
+    """ if use_legacy_links else ""
+    links_join = """
+        LEFT JOIN links l
+            ON l.hdp_market_id = r.market_id
+           AND l.link_rank = 1
+    """ if use_legacy_links else ""
+    query = f"""
+        WITH ranked AS (
+            SELECT
+                h.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY h.market_id, h.hdp_line
+                    ORDER BY h.updated_at DESC, h.id DESC
+                ) AS row_rank
+            FROM WS_odds_hdp h
+        )
+        {links_cte}
         SELECT
             r.market_id,
-            l.link_market_id,
-            l.link_match_id,
+            {link_market_expr} AS link_market_id,
+            {link_match_expr} AS link_match_id,
             r.hdp_line,
             r.home_name,
             r.away_name,
@@ -1502,9 +1578,7 @@ def load_ws_odds_hdp() -> pd.DataFrame:
             COALESCE(r.n_updates, 0) AS n_updates,
             r.updated_at
         FROM ranked r
-        LEFT JOIN links l
-            ON l.hdp_market_id = r.market_id
-           AND l.link_rank = 1
+        {links_join}
         WHERE r.row_rank = 1
     """
     df = _query_dataframe(query)
@@ -1672,17 +1746,16 @@ def _extract_hdp_pred_pair(hdp_preds: object, line: object) -> tuple[float, floa
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_hdp_simulation_frame() -> pd.DataFrame:
-    query = """
-        WITH h_latest AS (
-            SELECT
-                h.*,
-                ROW_NUMBER() OVER (
-                    PARTITION BY h.market_id, h.hdp_line
-                    ORDER BY h.updated_at DESC, h.id DESC
-                ) AS row_rank
-            FROM WS_odds_hdp h
-            WHERE COALESCE(h.inplay, 0) = 0
-        ),
+    direct_market_col, direct_match_col = _resolve_ws_hdp_link_columns()
+    use_legacy_links = not (direct_market_col and direct_match_col)
+    link_market_expr = (
+        f"h.`{direct_market_col}`" if direct_market_col else "l.link_market_id"
+    )
+    link_match_expr = (
+        f"h.`{direct_match_col}`" if direct_match_col else "l.link_match_id"
+    )
+    links_cte = """
+        ,
         links AS (
             SELECT
                 hdp_market_id,
@@ -1704,7 +1777,26 @@ def load_hdp_simulation_frame() -> pd.DataFrame:
                     '$[*]' COLUMNS (hdp_market_id VARCHAR(20) PATH '$.marketId')
                 ) jt
             ) expanded
-        ),
+        )
+    """ if use_legacy_links else ""
+    links_join = """
+        LEFT JOIN links l
+            ON l.hdp_market_id = h.market_id
+           AND l.link_rank = 1
+    """ if use_legacy_links else ""
+    query = f"""
+        WITH h_latest AS (
+            SELECT
+                h.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY h.market_id, h.hdp_line
+                    ORDER BY h.updated_at DESC, h.id DESC
+                ) AS row_rank
+            FROM WS_odds_hdp h
+            WHERE COALESCE(h.inplay, 0) = 0
+        )
+        {links_cte}
+        ,
         aof_ranked AS (
             SELECT
                 CAST(a.MatchId AS CHAR) AS match_key,
@@ -1735,8 +1827,8 @@ def load_hdp_simulation_frame() -> pd.DataFrame:
         )
         SELECT
             h.market_id,
-            l.link_market_id,
-            l.link_match_id,
+            {link_market_expr} AS link_market_id,
+            {link_match_expr} AS link_match_id,
             h.hdp_line,
             h.home_name,
             h.away_name,
@@ -1765,11 +1857,9 @@ def load_hdp_simulation_frame() -> pd.DataFrame:
             s.result,
             s.score_updated_at
         FROM h_latest h
-        LEFT JOIN links l
-            ON l.hdp_market_id = h.market_id
-           AND l.link_rank = 1
+        {links_join}
         LEFT JOIN aof_ranked a
-            ON a.match_key = CAST(l.link_match_id AS CHAR)
+            ON a.match_key = CAST({link_match_expr} AS CHAR)
            AND a.row_rank = 1
         LEFT JOIN score_ranked s
             ON s.ID_MATCH = a.ID_MATCH

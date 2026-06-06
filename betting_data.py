@@ -1517,7 +1517,8 @@ def load_ws_odds_hdp() -> pd.DataFrame:
     link_match_expr = (
         f"r.`{direct_match_col}`" if direct_match_col else "l.link_match_id"
     )
-    links_cte = """
+    links_cte = (
+        """
         ,
         links AS (
             SELECT
@@ -1541,12 +1542,19 @@ def load_ws_odds_hdp() -> pd.DataFrame:
                 ) jt
             ) expanded
         )
-    """ if use_legacy_links else ""
-    links_join = """
+    """
+        if use_legacy_links
+        else ""
+    )
+    links_join = (
+        """
         LEFT JOIN links l
             ON l.hdp_market_id = r.market_id
            AND l.link_rank = 1
-    """ if use_legacy_links else ""
+    """
+        if use_legacy_links
+        else ""
+    )
     query = f"""
         WITH ranked AS (
             SELECT
@@ -1754,7 +1762,8 @@ def load_hdp_simulation_frame() -> pd.DataFrame:
     link_match_expr = (
         f"h.`{direct_match_col}`" if direct_match_col else "l.link_match_id"
     )
-    links_cte = """
+    links_cte = (
+        """
         ,
         links AS (
             SELECT
@@ -1778,12 +1787,19 @@ def load_hdp_simulation_frame() -> pd.DataFrame:
                 ) jt
             ) expanded
         )
-    """ if use_legacy_links else ""
-    links_join = """
+    """
+        if use_legacy_links
+        else ""
+    )
+    links_join = (
+        """
         LEFT JOIN links l
             ON l.hdp_market_id = h.market_id
            AND l.link_rank = 1
-    """ if use_legacy_links else ""
+    """
+        if use_legacy_links
+        else ""
+    )
     query = f"""
         WITH h_latest AS (
             SELECT

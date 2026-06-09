@@ -1166,8 +1166,16 @@ def _extract_hdp_pred_odds(
     if np.isclose(frac, 0.25) or np.isclose(frac, 0.75):
         lower_target = rounded_line - 0.25
         upper_target = rounded_line + 0.25
-        lower_values = [values for midpoint, values in entries if abs(midpoint - lower_target) <= 0.02]
-        upper_values = [values for midpoint, values in entries if abs(midpoint - upper_target) <= 0.02]
+        lower_values = [
+            values
+            for midpoint, values in entries
+            if abs(midpoint - lower_target) <= 0.02
+        ]
+        upper_values = [
+            values
+            for midpoint, values in entries
+            if abs(midpoint - upper_target) <= 0.02
+        ]
         if lower_values and upper_values:
             lower_value = _value_from_entry(lower_values[0])
             upper_value = _value_from_entry(upper_values[0])
@@ -1990,8 +1998,12 @@ def _extract_hdp_pred_pair(hdp_preds: object, line: object) -> tuple[float, floa
 
     home_pred = pd.to_numeric(best_values.get("hdp_home_pred"), errors="coerce")
     away_pred = pd.to_numeric(best_values.get("hdp_away_pred"), errors="coerce")
-    home_value = float(home_pred) if pd.notna(home_pred) and float(home_pred) > 1.0 else np.nan
-    away_value = float(away_pred) if pd.notna(away_pred) and float(away_pred) > 1.0 else np.nan
+    home_value = (
+        float(home_pred) if pd.notna(home_pred) and float(home_pred) > 1.0 else np.nan
+    )
+    away_value = (
+        float(away_pred) if pd.notna(away_pred) and float(away_pred) > 1.0 else np.nan
+    )
     return home_value, away_value
 
 

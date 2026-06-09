@@ -670,7 +670,9 @@ def load_bet_results(user_id: int | None = None) -> pd.DataFrame:
     ) * 100
     bets.loc[valid_pred, "expected_roi_pct"] = bets.loc[valid_pred, "edge_pct"]
     bets.loc[valid_pred, "expected_profit"] = (
-        bets.loc[valid_pred, "stake"] * bets.loc[valid_pred, "expected_roi_pct"] / 100
+        bets.loc[valid_pred, "exposure"]
+        * bets.loc[valid_pred, "expected_roi_pct"]
+        / 100
     )
 
     bets["result_label"] = "Open"

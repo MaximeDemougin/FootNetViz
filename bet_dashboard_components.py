@@ -712,6 +712,7 @@ def render_grouped_table(df: pd.DataFrame, unit_mode: bool = False) -> None:
         "Grouper par",
         options=[
             "Match",
+            "Type marché",
             "Pays",
             "Ligue",
             "Cote",
@@ -726,6 +727,7 @@ def render_grouped_table(df: pd.DataFrame, unit_mode: bool = False) -> None:
     )
     col_map = {
         "Match": "Match",
+        "Type marché": "Type marché",
         "Pays": "Pays",
         "Ligue": "Ligue",
         "Cote": "Cote_bin",
@@ -748,6 +750,7 @@ def render_grouped_table(df: pd.DataFrame, unit_mode: bool = False) -> None:
             "MatchId",
             "ID_MARKET",
             "Date",
+            "Type marché",
             "Ligue",
             "Match",
             "Modalité",

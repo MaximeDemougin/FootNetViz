@@ -561,6 +561,7 @@ def load_bet_results(user_id: int | None = None) -> pd.DataFrame:
             aofagg.p_calib_home,
             aofagg.p_calib_draw,
             aofagg.p_calib_away,
+            aofagg.hdp_preds,
             NULL AS team_name,
             NULL AS pred_odds,
             NULL AS ev_pct,
@@ -589,7 +590,8 @@ def load_bet_results(user_id: int | None = None) -> pd.DataFrame:
                 MAX(AwayTeam_clean) AS AwayTeam_clean,
                 MAX(p_calib_home) AS p_calib_home,
                 MAX(p_calib_draw) AS p_calib_draw,
-                MAX(p_calib_away) AS p_calib_away
+                MAX(p_calib_away) AS p_calib_away,
+                MAX(CAST(hdp_preds AS CHAR)) AS hdp_preds
             FROM AsianOdds_feeds
             GROUP BY MatchId
         ) aofagg
@@ -642,6 +644,7 @@ def load_bet_results(user_id: int | None = None) -> pd.DataFrame:
         .fillna(bets["selection"])
         .fillna(bets["MatchId"].astype("string"))
     )
+    bets["effective_odds"] = bets.apply(_compute_effective_market_odds, axis=1)
     bets["pred_odds"] = bets.apply(_compute_effective_pred_odds, axis=1)
     bets["display_date"] = bets["settledDate"]
     bets["display_date"] = bets["display_date"].fillna(bets["matchedDate"])
@@ -660,9 +663,9 @@ def load_bet_results(user_id: int | None = None) -> pd.DataFrame:
         / bets.loc[positive_stake & bets["settled"], "stake"]
     ) * 100
     bets["edge_pct"] = np.nan
-    valid_pred = positive_stake & bets["pred_odds"].gt(0)
+    valid_pred = positive_stake & bets["pred_odds"].gt(0) & bets["effective_odds"].gt(0)
     bets.loc[valid_pred, "edge_pct"] = (
-        (bets.loc[valid_pred, "placed_odds"] / bets.loc[valid_pred, "pred_odds"]) - 1
+        (bets.loc[valid_pred, "effective_odds"] / bets.loc[valid_pred, "pred_odds"]) - 1
     ) * 100
     bets.loc[valid_pred, "expected_roi_pct"] = bets.loc[valid_pred, "edge_pct"]
     bets.loc[valid_pred, "expected_profit"] = (
@@ -1015,8 +1018,112 @@ def _resolve_market_side(row: pd.Series) -> str:
     return "unknown"
 
 
+def _is_lay_bet(row: pd.Series) -> bool:
+    side_token = _normalize_bet_token(row.get("side_back_lay"))
+    return side_token == "lay"
+
+
+def _opposite_side(side: str) -> str:
+    if side == "home":
+        return "away"
+    if side == "away":
+        return "home"
+    return side
+
+
+def _is_asian_handicap_market(row: pd.Series) -> bool:
+    market_text = f"{row.get('match_type') or ''} {row.get('type') or ''}".lower()
+    return "ah" in market_text or "handicap" in market_text or "asian" in market_text
+
+
+def _inverse_two_outcome_odds(odds: float) -> float:
+    value = float(odds)
+    if value <= 1.0:
+        return np.nan
+    probability = 1.0 / value
+    opposite_probability = 1.0 - probability
+    if opposite_probability <= 0:
+        return np.nan
+    return 1.0 / opposite_probability
+
+
+def _parse_hdp_payload(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    text = str(value or "").strip()
+    if not text or text.lower() in {"nan", "none", "null"}:
+        return {}
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _extract_hdp_pred_odds(row: pd.Series, target_side: str) -> float:
+    payload = _parse_hdp_payload(row.get("hdp_preds"))
+    if not payload:
+        return np.nan
+
+    selected_side = _resolve_market_side(row)
+    bet_line = pd.to_numeric(row.get("bet"), errors="coerce")
+    if pd.isna(bet_line):
+        return np.nan
+
+    # hdp_preds lines are expressed from the home perspective.
+    home_line = float(bet_line)
+    if selected_side == "away":
+        home_line = -home_line
+
+    best_values: dict[str, Any] | None = None
+    best_delta = float("inf")
+    for key, values in payload.items():
+        if not isinstance(values, dict):
+            continue
+        bounds = _parse_hdp_line_label(key)
+        if bounds is None:
+            continue
+        midpoint = (bounds[0] + bounds[1]) / 2.0
+        delta = abs(midpoint - home_line)
+        if delta < best_delta:
+            best_delta = delta
+            best_values = values
+
+    if best_values is None or best_delta > 0.26:
+        return np.nan
+
+    if target_side == "home":
+        value = pd.to_numeric(best_values.get("hdp_home_pred"), errors="coerce")
+    elif target_side == "away":
+        value = pd.to_numeric(best_values.get("hdp_away_pred"), errors="coerce")
+    else:
+        return np.nan
+    return float(value) if pd.notna(value) and float(value) > 1.0 else np.nan
+
+
 def _compute_effective_pred_odds(row: pd.Series) -> float:
-    side = _resolve_market_side(row)
+    pred_raw = pd.to_numeric(row.get("pred"), errors="coerce")
+    selected_side = _resolve_market_side(row)
+    target_side = _opposite_side(selected_side) if _is_lay_bet(row) else selected_side
+
+    if _is_asian_handicap_market(row):
+        hdp_pred = _extract_hdp_pred_odds(row, target_side)
+        if pd.notna(hdp_pred):
+            return float(hdp_pred)
+        if pd.notna(pred_raw) and float(pred_raw) > 1.0:
+            return float(pred_raw)
+        return np.nan
+
+    if pd.notna(pred_raw) and float(pred_raw) > 1.0:
+        if _is_lay_bet(row):
+            inverted_pred = _inverse_two_outcome_odds(float(pred_raw))
+            if pd.notna(inverted_pred):
+                return float(inverted_pred)
+        else:
+            return float(pred_raw)
+
+    side = target_side
+
     if side == "home":
         probability = row.get("p_calib_home")
     elif side == "draw":
@@ -1037,6 +1144,28 @@ def _compute_effective_pred_odds(row: pd.Series) -> float:
         return np.nan
 
     return 1.0 / prob
+
+
+def _compute_effective_market_odds(row: pd.Series) -> float:
+    placed_odds = pd.to_numeric(row.get("placed_odds"), errors="coerce")
+    if pd.isna(placed_odds) or float(placed_odds) <= 0:
+        return np.nan
+    if not _is_lay_bet(row):
+        return float(placed_odds)
+    if float(placed_odds) <= 1.0:
+        return np.nan
+    return 1.0 + ((1.0 / (float(placed_odds) - 1.0)) * 0.97)
+
+
+def _normalize_market_type_label(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return "Autre"
+    if "match odds" in text or "1x2" in text:
+        return "1X2"
+    if "handicap" in text or text == "ah" or "asian" in text:
+        return "AH"
+    return str(value).strip()
 
 
 def _clean_match_side(value: Any) -> str:
@@ -1215,8 +1344,19 @@ def prepare_dashboard_bets(bets: pd.DataFrame) -> pd.DataFrame:
         ),
         axis=1,
     )
-    dashboard["Mise"] = pd.to_numeric(dashboard["stake"], errors="coerce").fillna(0.0)
-    dashboard["Cote"] = pd.to_numeric(dashboard["placed_odds"], errors="coerce")
+    dashboard["Type marché"] = dashboard["match_type"].apply(
+        _normalize_market_type_label
+    )
+    dashboard["Mise"] = pd.to_numeric(dashboard["liability"], errors="coerce")
+    dashboard["Mise"] = (
+        dashboard["Mise"]
+        .fillna(pd.to_numeric(dashboard["stake"], errors="coerce"))
+        .fillna(0.0)
+    )
+    dashboard["Cote"] = pd.to_numeric(dashboard.get("effective_odds"), errors="coerce")
+    dashboard["Cote"] = dashboard["Cote"].fillna(
+        pd.to_numeric(dashboard["placed_odds"], errors="coerce")
+    )
     dashboard["Prédiction"] = pd.to_numeric(dashboard["pred_odds"], errors="coerce")
     dashboard["Gains net"] = pd.to_numeric(dashboard["profit"], errors="coerce").fillna(
         0.0

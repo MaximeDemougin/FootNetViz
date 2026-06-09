@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from difflib import SequenceMatcher
 from datetime import datetime
 from typing import Any
 
@@ -977,35 +978,74 @@ def _normalize_bet_token(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", text)
 
 
+def _normalize_words(value: Any) -> set[str]:
+    text = re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+    if not text:
+        return set()
+    ignored = {"fc", "cf", "de", "the", "club"}
+    return {token for token in text.split() if len(token) >= 3 and token not in ignored}
+
+
+def _resolve_side_from_label(label: Any, home_name: Any, away_name: Any) -> str:
+    label_token = _normalize_bet_token(label)
+    home_token = _normalize_bet_token(home_name)
+    away_token = _normalize_bet_token(away_name)
+
+    if (
+        label_token
+        and home_token
+        and (
+            label_token == home_token
+            or label_token in home_token
+            or home_token in label_token
+        )
+    ):
+        return "home"
+    if (
+        label_token
+        and away_token
+        and (
+            label_token == away_token
+            or label_token in away_token
+            or away_token in label_token
+        )
+    ):
+        return "away"
+
+    label_words = _normalize_words(label)
+    home_words = _normalize_words(home_name)
+    away_words = _normalize_words(away_name)
+    if label_words:
+        home_overlap = len(label_words & home_words) / max(1, len(home_words))
+        away_overlap = len(label_words & away_words) / max(1, len(away_words))
+        if home_overlap >= 0.5 and home_overlap > away_overlap + 0.05:
+            return "home"
+        if away_overlap >= 0.5 and away_overlap > home_overlap + 0.05:
+            return "away"
+
+    if label_token and home_token and away_token:
+        home_ratio = SequenceMatcher(None, label_token, home_token).ratio()
+        away_ratio = SequenceMatcher(None, label_token, away_token).ratio()
+        if home_ratio >= 0.62 and home_ratio > away_ratio + 0.05:
+            return "home"
+        if away_ratio >= 0.62 and away_ratio > home_ratio + 0.05:
+            return "away"
+
+    return "unknown"
+
+
 def _resolve_market_side(row: pd.Series) -> str:
     selection_token = _normalize_bet_token(row.get("selection"))
     if selection_token in {"x", "draw", "matchnul", "nul", "tie", "thedraw"}:
         return "draw"
 
-    home_token = _normalize_bet_token(row.get("HomeTeam_clean") or row.get("HomeTeam"))
-    away_token = _normalize_bet_token(row.get("AwayTeam_clean") or row.get("AwayTeam"))
-
-    if (
-        selection_token
-        and home_token
-        and (
-            selection_token == home_token
-            or selection_token in home_token
-            or home_token in selection_token
-        )
-    ):
-        return "home"
-
-    if (
-        selection_token
-        and away_token
-        and (
-            selection_token == away_token
-            or selection_token in away_token
-            or away_token in selection_token
-        )
-    ):
-        return "away"
+    inferred_side = _resolve_side_from_label(
+        row.get("selection"),
+        row.get("HomeTeam_clean") or row.get("HomeTeam"),
+        row.get("AwayTeam_clean") or row.get("AwayTeam"),
+    )
+    if inferred_side != "unknown":
+        return inferred_side
 
     bet_side_token = _normalize_bet_token(row.get("bet"))
     if bet_side_token in {"2", "h", "home", "1"}:
@@ -1016,6 +1056,17 @@ def _resolve_market_side(row: pd.Series) -> str:
         return "away"
 
     return "unknown"
+
+
+def _resolve_ah_selection_side(row: pd.Series) -> str:
+    side = _resolve_side_from_label(
+        row.get("bet_libelle"),
+        row.get("HomeTeam_clean") or row.get("HomeTeam"),
+        row.get("AwayTeam_clean") or row.get("AwayTeam"),
+    )
+    if side != "unknown":
+        return side
+    return _resolve_market_side(row)
 
 
 def _is_lay_bet(row: pd.Series) -> bool:
@@ -1060,12 +1111,17 @@ def _parse_hdp_payload(value: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _extract_hdp_pred_odds(row: pd.Series, target_side: str) -> float:
+def _extract_hdp_pred_odds(
+    row: pd.Series,
+    target_side: str,
+    selected_side: str | None = None,
+) -> float:
     payload = _parse_hdp_payload(row.get("hdp_preds"))
     if not payload:
         return np.nan
 
-    selected_side = _resolve_market_side(row)
+    if not selected_side or selected_side == "unknown":
+        selected_side = _resolve_ah_selection_side(row)
     bet_line = pd.to_numeric(row.get("bet"), errors="coerce")
     if pd.isna(bet_line):
         return np.nan
@@ -1075,8 +1131,7 @@ def _extract_hdp_pred_odds(row: pd.Series, target_side: str) -> float:
     if selected_side == "away":
         home_line = -home_line
 
-    best_values: dict[str, Any] | None = None
-    best_delta = float("inf")
+    entries: list[tuple[float, dict[str, Any]]] = []
     for key, values in payload.items():
         if not isinstance(values, dict):
             continue
@@ -1084,30 +1139,66 @@ def _extract_hdp_pred_odds(row: pd.Series, target_side: str) -> float:
         if bounds is None:
             continue
         midpoint = (bounds[0] + bounds[1]) / 2.0
-        delta = abs(midpoint - home_line)
-        if delta < best_delta:
-            best_delta = delta
-            best_values = values
+        entries.append((float(midpoint), values))
 
-    if best_values is None or best_delta > 0.26:
+    if not entries:
         return np.nan
 
-    if target_side == "home":
-        value = pd.to_numeric(best_values.get("hdp_home_pred"), errors="coerce")
-    elif target_side == "away":
-        value = pd.to_numeric(best_values.get("hdp_away_pred"), errors="coerce")
-    else:
+    def _value_from_entry(values: dict[str, Any]) -> float:
+        if target_side == "home":
+            value = pd.to_numeric(values.get("hdp_home_pred"), errors="coerce")
+        elif target_side == "away":
+            value = pd.to_numeric(values.get("hdp_away_pred"), errors="coerce")
+        else:
+            return np.nan
+        return float(value) if pd.notna(value) and float(value) > 1.0 else np.nan
+
+    # 1) Exact line match first.
+    for midpoint, values in entries:
+        if abs(midpoint - home_line) <= 0.02:
+            exact_value = _value_from_entry(values)
+            if pd.notna(exact_value):
+                return exact_value
+
+    # 2) Quarter-line fallback: rebuild from adjacent half-lines (e.g. -0.25 from 0.0 and -0.5).
+    rounded_line = round(home_line * 4.0) / 4.0
+    frac = abs(rounded_line - int(rounded_line))
+    if np.isclose(frac, 0.25) or np.isclose(frac, 0.75):
+        lower_target = rounded_line - 0.25
+        upper_target = rounded_line + 0.25
+        lower_values = [values for midpoint, values in entries if abs(midpoint - lower_target) <= 0.02]
+        upper_values = [values for midpoint, values in entries if abs(midpoint - upper_target) <= 0.02]
+        if lower_values and upper_values:
+            lower_value = _value_from_entry(lower_values[0])
+            upper_value = _value_from_entry(upper_values[0])
+            if pd.notna(lower_value) and pd.notna(upper_value):
+                return float((lower_value + upper_value) / 2.0)
+
+    # 3) Last fallback: nearest available line.
+    sorted_entries = sorted(
+        entries,
+        key=lambda item: (
+            abs(item[0] - home_line),
+            0 if np.sign(item[0]) == np.sign(home_line) else 1,
+            abs(item[0]),
+        ),
+    )
+    nearest_midpoint, nearest_values = sorted_entries[0]
+    if abs(nearest_midpoint - home_line) > 0.26:
         return np.nan
-    return float(value) if pd.notna(value) and float(value) > 1.0 else np.nan
+    return _value_from_entry(nearest_values)
 
 
 def _compute_effective_pred_odds(row: pd.Series) -> float:
     pred_raw = pd.to_numeric(row.get("pred"), errors="coerce")
-    selected_side = _resolve_market_side(row)
+    if _is_asian_handicap_market(row):
+        selected_side = _resolve_ah_selection_side(row)
+    else:
+        selected_side = _resolve_market_side(row)
     target_side = _opposite_side(selected_side) if _is_lay_bet(row) else selected_side
 
     if _is_asian_handicap_market(row):
-        hdp_pred = _extract_hdp_pred_odds(row, target_side)
+        hdp_pred = _extract_hdp_pred_odds(row, target_side, selected_side=selected_side)
         if pd.notna(hdp_pred):
             return float(hdp_pred)
         if pd.notna(pred_raw) and float(pred_raw) > 1.0:
@@ -1236,6 +1327,18 @@ def _derive_match_odds_modality(
         return "Unknown"
 
     market_label = f"{bet_type or ''} {match_type or ''}".lower()
+    if "ah" in market_label or "handicap" in market_label or "asian" in market_label:
+        # AH: the line is encoded in bet, while selection indicates side/direction.
+        selection_base = re.sub(
+            r"\s*(?:[+-]\d+(?:\.\d+)?(?:\s*&\s*[+-]?\d+(?:\.\d+)?)?|[+-]?\d+(?:\.\d+)?\s*&\s*[+-]?\d+(?:\.\d+)?)\s*$",
+            "",
+            selection_text,
+        ).strip()
+        line_text = str(bet_value or "").strip()
+        if line_text:
+            return f"{selection_base or selection_text} {line_text}".strip()
+        return selection_base or selection_text
+
     if "match odds" not in market_label and "1x2" not in market_label:
         return selection_text
 
@@ -1887,9 +1990,9 @@ def _extract_hdp_pred_pair(hdp_preds: object, line: object) -> tuple[float, floa
 
     home_pred = pd.to_numeric(best_values.get("hdp_home_pred"), errors="coerce")
     away_pred = pd.to_numeric(best_values.get("hdp_away_pred"), errors="coerce")
-    return float(home_pred) if pd.notna(home_pred) else np.nan, float(
-        away_pred
-    ) if pd.notna(away_pred) else np.nan
+    home_value = float(home_pred) if pd.notna(home_pred) and float(home_pred) > 1.0 else np.nan
+    away_value = float(away_pred) if pd.notna(away_pred) and float(away_pred) > 1.0 else np.nan
+    return home_value, away_value
 
 
 @st.cache_data(ttl=60, show_spinner=False)

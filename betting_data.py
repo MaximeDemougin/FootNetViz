@@ -1113,6 +1113,54 @@ def _parse_hdp_payload(value: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _probability_to_odds(probability: Any) -> float:
+    prob = pd.to_numeric(probability, errors="coerce")
+    if pd.isna(prob):
+        return np.nan
+    value = float(prob)
+    if value > 1.0 and value <= 100.0:
+        value = value / 100.0
+    if value <= 0:
+        return np.nan
+    return 1.0 / value
+
+
+def _extract_hdp_side_odds(values: dict[str, Any], side: str) -> float:
+    normalized = {
+        str(key).strip().lower().replace("-", "_"): value
+        for key, value in values.items()
+    }
+
+    calib_keys = [
+        f"hdp_{side}_calib",
+        f"{side}_calib",
+        f"calib_{side}",
+    ]
+    for key in calib_keys:
+        if key in normalized:
+            odds = _probability_to_odds(normalized.get(key))
+            if pd.notna(odds) and float(odds) > 1.0:
+                return float(odds)
+
+    for key, value in normalized.items():
+        if "calib" in key and side in key:
+            odds = _probability_to_odds(value)
+            if pd.notna(odds) and float(odds) > 1.0:
+                return float(odds)
+
+    pred_keys = [
+        f"hdp_{side}_pred",
+        f"{side}_pred",
+        f"pred_{side}",
+    ]
+    for key in pred_keys:
+        raw = pd.to_numeric(normalized.get(key), errors="coerce")
+        if pd.notna(raw) and float(raw) > 1.0:
+            return float(raw)
+
+    return np.nan
+
+
 def _extract_hdp_pred_odds(
     row: pd.Series,
     target_side: str,
@@ -1147,13 +1195,9 @@ def _extract_hdp_pred_odds(
         return np.nan
 
     def _value_from_entry(values: dict[str, Any]) -> float:
-        if target_side == "home":
-            value = pd.to_numeric(values.get("hdp_home_pred"), errors="coerce")
-        elif target_side == "away":
-            value = pd.to_numeric(values.get("hdp_away_pred"), errors="coerce")
-        else:
-            return np.nan
-        return float(value) if pd.notna(value) and float(value) > 1.0 else np.nan
+        if target_side in {"home", "away"}:
+            return _extract_hdp_side_odds(values, target_side)
+        return np.nan
 
     # 1) Exact line match first.
     for midpoint, values in entries:
@@ -1162,41 +1206,15 @@ def _extract_hdp_pred_odds(
             if pd.notna(exact_value):
                 return exact_value
 
-    # 2) Quarter-line fallback: rebuild from adjacent half-lines (e.g. -0.25 from 0.0 and -0.5).
-    rounded_line = round(home_line * 4.0) / 4.0
-    frac = abs(rounded_line - int(rounded_line))
-    if np.isclose(frac, 0.25) or np.isclose(frac, 0.75):
-        lower_target = rounded_line - 0.25
-        upper_target = rounded_line + 0.25
-        lower_values = [
-            values
-            for midpoint, values in entries
-            if abs(midpoint - lower_target) <= 0.02
-        ]
-        upper_values = [
-            values
-            for midpoint, values in entries
-            if abs(midpoint - upper_target) <= 0.02
-        ]
-        if lower_values and upper_values:
-            lower_value = _value_from_entry(lower_values[0])
-            upper_value = _value_from_entry(upper_values[0])
-            if pd.notna(lower_value) and pd.notna(upper_value):
-                return float((lower_value + upper_value) / 2.0)
-
-    # 3) Last fallback: nearest available line.
-    sorted_entries = sorted(
-        entries,
-        key=lambda item: (
-            abs(item[0] - home_line),
-            0 if np.sign(item[0]) == np.sign(home_line) else 1,
-            abs(item[0]),
-        ),
-    )
-    nearest_midpoint, nearest_values = sorted_entries[0]
-    if abs(nearest_midpoint - home_line) > 0.26:
-        return np.nan
-    return _value_from_entry(nearest_values)
+    # No guessing on HDP lines: if exact line is missing, fallback to Bet_p.pred.
+    pred_raw = pd.to_numeric(row.get("pred"), errors="coerce")
+    if pd.notna(pred_raw):
+        pred_value = float(pred_raw)
+        if pred_value > 1.0:
+            return pred_value
+        if 0.0 < pred_value <= 1.0:
+            return 1.0 / pred_value
+    return np.nan
 
 
 def _compute_effective_pred_odds(row: pd.Series) -> float:
@@ -1998,14 +2016,8 @@ def _extract_hdp_pred_pair(hdp_preds: object, line: object) -> tuple[float, floa
     if best_values is None or best_delta > 0.02:
         return np.nan, np.nan
 
-    home_pred = pd.to_numeric(best_values.get("hdp_home_pred"), errors="coerce")
-    away_pred = pd.to_numeric(best_values.get("hdp_away_pred"), errors="coerce")
-    home_value = (
-        float(home_pred) if pd.notna(home_pred) and float(home_pred) > 1.0 else np.nan
-    )
-    away_value = (
-        float(away_pred) if pd.notna(away_pred) and float(away_pred) > 1.0 else np.nan
-    )
+    home_value = _extract_hdp_side_odds(best_values, "home")
+    away_value = _extract_hdp_side_odds(best_values, "away")
     return home_value, away_value
 
 

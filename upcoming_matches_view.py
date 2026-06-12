@@ -120,6 +120,45 @@ def _fmt_pct(value: object) -> str:
     return f"{float(numeric):+.1f}%" if pd.notna(numeric) else "-"
 
 
+def _probability_to_odds(probability: object) -> float:
+    prob = pd.to_numeric(probability, errors="coerce")
+    if pd.isna(prob):
+        return np.nan
+    value = float(prob)
+    if value > 1.0 and value <= 100.0:
+        value = value / 100.0
+    if value <= 0:
+        return np.nan
+    return 1.0 / value
+
+
+def _extract_hdp_side_pred(values: dict, side: str) -> float:
+    normalized = {
+        str(key).strip().lower().replace("-", "_"): value
+        for key, value in values.items()
+    }
+
+    for key in (f"hdp_{side}_calib", f"{side}_calib", f"calib_{side}"):
+        if key in normalized:
+            odds = _probability_to_odds(normalized.get(key))
+            if pd.notna(odds) and float(odds) > 1.0:
+                return float(odds)
+
+    for key, value in normalized.items():
+        if "calib" in key and side in key:
+            odds = _probability_to_odds(value)
+            if pd.notna(odds) and float(odds) > 1.0:
+                return float(odds)
+
+    pred = pd.to_numeric(
+        normalized.get(f"hdp_{side}_pred", normalized.get(f"{side}_pred")),
+        errors="coerce",
+    )
+    if pd.notna(pred) and float(pred) > 1.0:
+        return float(pred)
+    return np.nan
+
+
 def _safe_int(value: object) -> int:
     numeric = pd.to_numeric(value, errors="coerce")
     return int(float(numeric)) if pd.notna(numeric) else 0
@@ -343,9 +382,9 @@ def _hdp_rows(
         if not isinstance(values, dict):
             continue
         home_max = pd.to_numeric(values.get("hdp_home_max"), errors="coerce")
-        home_pred = pd.to_numeric(values.get("hdp_home_pred"), errors="coerce")
+        home_pred = _extract_hdp_side_pred(values, "home")
         away_max = pd.to_numeric(values.get("hdp_away_max"), errors="coerce")
-        away_pred = pd.to_numeric(values.get("hdp_away_pred"), errors="coerce")
+        away_pred = _extract_hdp_side_pred(values, "away")
 
         low, high, _ = _parse_line(str(line))
         record = None
